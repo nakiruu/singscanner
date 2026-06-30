@@ -76,7 +76,7 @@ services:
       SCANNER_INTERVAL_S: ${SCANNER_INTERVAL_S:-15}
       SCANNER_MOCK: ${SCANNER_MOCK:-true}
     ports:
-      - "3000:3000"
+      - "3097:3000"
 
 volumes:
   pgdata:

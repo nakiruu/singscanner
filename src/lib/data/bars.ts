@@ -45,6 +45,12 @@ export interface IntradayBar {
 export type IntradayTimeframe = "5Min" | "1Min";
 
 export interface BarFeatures {
+  // short-term lookbacks (ml2/data.py:124-138) — critical for 5-10d horizons
+  ret_3d: number | null;
+  ret_5d: number | null;
+  ret_10d: number | null;
+  ret_prev_5d: number | null;          // 5d window before the last (short_accel input)
+
   ret_21d: number | null;
   ret_63d: number | null;
   ret_126d: number | null;
@@ -290,6 +296,10 @@ export function computeBarFeatures(
   intradayBars: IntradayBar[] | null,
 ): BarFeatures {
   const empty: BarFeatures = {
+    ret_3d: null,
+    ret_5d: null,
+    ret_10d: null,
+    ret_prev_5d: null,
     ret_21d: null,
     ret_63d: null,
     ret_126d: null,
@@ -314,11 +324,20 @@ export function computeBarFeatures(
   const r21 = ret(closes, 21);
   const r63 = ret(closes, 63);
   const r126 = ret(closes, 126);
+  // short-term lookbacks — ml2/data.py:127-130
+  const r3 = ret(closes, 3);
+  const r5 = ret(closes, 5);
+  const r10 = ret(closes, 10);
 
   // ret_prev_21d — data.py:128-129
   let rPrev21: number | null = null;
   if (n > 43 && closes[n - 22] > 0 && closes[n - 43] > 0) {
     rPrev21 = closes[n - 22] / closes[n - 43] - 1.0;
+  }
+  // ret_prev_5d — ml2/data.py:132-137 (5d window before the last, for short_accel)
+  let rPrev5: number | null = null;
+  if (r5 !== null && n > 10 && closes[n - 6] > 0 && closes[n - 11] > 0) {
+    rPrev5 = closes[n - 6] / closes[n - 11] - 1.0;
   }
 
   // sma50 / sma200 — data.py:131-132
@@ -440,6 +459,10 @@ export function computeBarFeatures(
   }
 
   return {
+    ret_3d: r3,
+    ret_5d: r5,
+    ret_10d: r10,
+    ret_prev_5d: rPrev5,
     ret_21d: r21,
     ret_63d: r63,
     ret_126d: r126,

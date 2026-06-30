@@ -132,6 +132,7 @@ interface SymbolPack {
 // Build RawSymbolInputs from a SymbolPack. Conservative defaults for null
 // features so the cross-sectional ranker has something to rank — using NaN
 // would silently zero a row's percentile because of the sorted-array filter.
+// Short-term lookbacks stay nullable: signals.ts rankOrNull skips missing parts.
 function rawInputsFor(p: SymbolPack): RawSymbolInputs {
   const f = p.feats;
   const dollarVol = p.price * p.dailyVolume;
@@ -140,6 +141,12 @@ function rawInputsFor(p: SymbolPack): RawSymbolInputs {
   const sma50ok = f.sma50 != null && f.sma50 > 0;
   const high60ok = f.high_60d != null && f.high_60d > 0;
   return {
+    // short-term lookbacks (ml2)
+    ret_3d:            f.ret_3d,
+    ret_5d:            f.ret_5d,
+    ret_10d:           f.ret_10d,
+    retPrev5d:         f.ret_prev_5d,
+
     ret_21d:           f.ret_21d ?? 0,
     ret_63d:           f.ret_63d ?? 0,
     ret_126d:          f.ret_126d ?? 0,

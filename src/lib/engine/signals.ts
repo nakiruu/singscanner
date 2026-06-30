@@ -8,7 +8,14 @@ import type { SignalScores } from "./forecast";
 // Raw per-symbol inputs the families consume.
 // Fundamentals are nullable: we treat null as "missing" everywhere.
 export interface RawSymbolInputs {
-  // Momentum block
+  // Momentum block — short-term lookbacks (ml2/engine.py:415-419) are critical
+  // for 5–10d horizons. All nullable because shorter windows aren't always
+  // available; computeFamilies skips a part when its input is null.
+  ret_3d: number | null;
+  ret_5d: number | null;
+  ret_10d: number | null;
+  retPrev5d: number | null;     // 5d window before the last (short_accel input)
+
   ret_21d: number;
   ret_63d: number;
   ret_126d: number;
@@ -40,6 +47,7 @@ export interface RawSymbolInputs {
 
 interface MomentumExtras {
   accel: number;
+  shortAccel: number | null;     // ret_5d - retPrev5d (ml2/engine.py:398-399)
   volRatio: number;
 }
 
@@ -101,17 +109,26 @@ export function computeFamilies(rows: readonly RawSymbolInputs[]): SignalScores[
   const n = rows.length;
   if (n === 0) return [];
 
-  // --- Momentum: precompute the two derived series first.
+  // --- Momentum: precompute the derived series first.
   const prepared: PreparedMomentum[] = rows.map((r) => ({
     raw: r,
     extras: {
       accel: r.ret_21d - r.retPrev21d,
+      shortAccel:
+        r.ret_5d !== null && r.retPrev5d !== null
+          ? r.ret_5d - r.retPrev5d
+          : null,
       // relative day volume; guard /0
       volRatio: r.avg20dVol > 0 ? r.dayVol / r.avg20dVol : 1,
     },
   }));
 
   // momentum sorted universes
+  // short-term — ml2/engine.py:361-363
+  const s_ret3     = sortedFiniteAscNullable(prepared.map((p) => p.raw.ret_3d));
+  const s_ret5     = sortedFiniteAscNullable(prepared.map((p) => p.raw.ret_5d));
+  const s_ret10    = sortedFiniteAscNullable(prepared.map((p) => p.raw.ret_10d));
+  // medium / long
   const s_ret21    = sortedFiniteAsc(prepared.map((p) => p.raw.ret_21d));
   const s_ret63    = sortedFiniteAsc(prepared.map((p) => p.raw.ret_63d));
   const s_ret126   = sortedFiniteAsc(prepared.map((p) => p.raw.ret_126d));
@@ -119,6 +136,7 @@ export function computeFamilies(rows: readonly RawSymbolInputs[]): SignalScores[
   const s_pSma50   = sortedFiniteAsc(prepared.map((p) => p.raw.priceOverSma50 - 1));
   const s_pHigh60  = sortedFiniteAsc(prepared.map((p) => p.raw.priceOverHigh60d));
   const s_accel    = sortedFiniteAsc(prepared.map((p) => p.extras.accel));
+  const s_shortAcc = sortedFiniteAscNullable(prepared.map((p) => p.extras.shortAccel));
   const s_volRatio = sortedFiniteAsc(prepared.map((p) => p.extras.volRatio));
 
   // quality sorted universes (skip nulls)
@@ -139,18 +157,29 @@ export function computeFamilies(rows: readonly RawSymbolInputs[]): SignalScores[
   return prepared.map((p) => {
     const r = p.raw;
 
-    // ---- Momentum: mean of 8 percentile ranks ----
-    const momentumParts: number[] = [
+    // ---- Momentum: mean of percentile ranks (Python ml2 ranks ONLY non-null
+    // parts; we mirror that with rankOrNull + meanDefined).
+    // ml2/engine.py:404-441
+    const momentumParts: Array<number | null> = [
+      // short-term lookbacks (most relevant for 5–10d horizons)
+      rankOrNull(r.ret_3d,                   s_ret3),
+      rankOrNull(r.ret_5d,                   s_ret5),
+      rankOrNull(r.ret_10d,                  s_ret10),
+      // medium / long-term lookbacks
       percentileRank(r.ret_21d,              s_ret21),
       percentileRank(r.ret_63d,              s_ret63),
       percentileRank(r.ret_126d,             s_ret126),
+      // trend / breakout
       percentileRank(r.trend_slope,          s_slope),
       percentileRank(r.priceOverSma50 - 1,   s_pSma50),
       percentileRank(r.priceOverHigh60d,     s_pHigh60),
+      // acceleration (medium + short)
       percentileRank(p.extras.accel,         s_accel),
+      rankOrNull(p.extras.shortAccel,        s_shortAcc),
+      // volume confirmation
       percentileRank(p.extras.volRatio,      s_volRatio),
     ];
-    const momentum = mean(momentumParts);
+    const momentum = meanDefined(momentumParts);
 
     // ---- Quality: average of whatever fundamental parts exist; 50 if none.
     // Python engine.py score_symbol (~lines 426-444): `q_parts` are appended only
