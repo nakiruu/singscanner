@@ -90,7 +90,14 @@ _fetches_429 = 0
 # ---------------------------------------------------------------------------
 
 def _load_seed() -> int:
-    """Load the seed file from the repo (read-only). Returns count loaded."""
+    """Load the seed file from the repo (read-only). Returns count loaded.
+
+    We stamp every loaded entry with time.time() so the seed gets a full
+    CACHE_TTL_S window of usefulness, regardless of how old the source file
+    is. Fundamentals barely change week-over-week; treating slightly-stale
+    seed data as fresh is dramatically better than serving nothing while
+    yfinance is rate-limiting us. The background worker still refreshes
+    these entries when it can, replacing the seed values with newer data."""
     if not SEED_PATH.is_file():
         log.info("no seed file at %s", SEED_PATH)
         return 0
@@ -98,12 +105,17 @@ def _load_seed() -> int:
         raw = json.loads(SEED_PATH.read_text())
         # Python reference shape: {"ts": <epoch>, "data": {sym: {...}}}.
         data = raw.get("data", raw)
-        seed_ts = float(raw.get("ts", time.time()))
+        source_ts = float(raw.get("ts", time.time()))
+        age_h = (time.time() - source_ts) / 3600
+        load_ts = time.time()
         n = 0
         for sym, row in data.items():
-            _cache[sym.upper()] = (seed_ts, row)
+            _cache[sym.upper()] = (load_ts, row)
             n += 1
-        log.info("seed loaded: %d symbols from %s (ts=%s)", n, SEED_PATH, int(seed_ts))
+        log.info(
+            "seed loaded: %d symbols from %s (source was %.1fh old; stamped with now())",
+            n, SEED_PATH, age_h,
+        )
         return n
     except Exception as e:  # noqa: BLE001
         log.warning("seed load failed: %s", e)
@@ -309,6 +321,9 @@ class FundamentalsResponse(BaseModel):
 
 
 def _is_fresh(ts: float, val: Optional[dict]) -> bool:
+    """Used by the BACKGROUND WORKER to decide what to refresh.
+    The endpoint serves any positive cache entry regardless of freshness —
+    stale fundamentals are dramatically more useful than no fundamentals."""
     age = time.time() - ts
     if val is not None:
         return age < CACHE_TTL_S
@@ -363,12 +378,28 @@ async def fundamentals(body: SymbolList) -> FundamentalsResponse:
 
     for sym in syms:
         entry = cache_snapshot.get(sym)
-        if entry is not None and entry[1] is not None and _is_fresh(entry[0], entry[1]):
-            rows.append(FundamentalRow(symbol=sym, **entry[1]))
+        if entry is None:
+            # Never seen this symbol — enqueue and report skipped.
+            await _enqueue(sym)
+            skipped.append(sym)
             continue
-        # Not cached, cached failure (older than NEG_TTL), or stale success
-        # -> enqueue for refresh and skip this round.
-        await _enqueue(sym)
-        skipped.append(sym)
+
+        ts, val = entry
+
+        if val is not None:
+            # Positive cache hit. Serve it even if stale — the worker will
+            # refresh in the background. Stale fundamentals >>> no fundamentals.
+            rows.append(FundamentalRow(symbol=sym, **val))
+            if not _is_fresh(ts, val):
+                await _enqueue(sym)
+            continue
+
+        # Negative cache entry. If it's recent we trust the failure was real
+        # (symbol delisted, ETF, etc) and don't burn a retry. Otherwise retry.
+        if _is_fresh(ts, val):
+            skipped.append(sym)
+        else:
+            await _enqueue(sym)
+            skipped.append(sym)
 
     return FundamentalsResponse(rows=rows, skipped=skipped)
