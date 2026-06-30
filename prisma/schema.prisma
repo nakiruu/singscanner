@@ -1,0 +1,90 @@
+// Singularity Scanner — Prisma schema
+// Source of truth: docs/instructions2.md "DB Schema (Prisma)"
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String?
+  image        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  accounts  Account[]
+  sessions  Session[]
+  portfolio PortfolioEntry[]
+  settings  UserSettings?
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model PortfolioEntry {
+  id        String   @id @default(cuid())
+  userId    String
+  symbol    String
+  qty       Float
+  costBasis Float
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, symbol])
+}
+
+model UserSettings {
+  id           String  @id @default(cuid())
+  userId       String  @unique
+  horizon      String  @default("3d")
+  universe     String  @default("auto")
+  maxSymbols   Int     @default(300)
+  alpacaKey    String?
+  alpacaSecret String?
+  alpacaFeed   String  @default("iex")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}

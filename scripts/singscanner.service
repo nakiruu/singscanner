@@ -1,0 +1,38 @@
+[Unit]
+Description=Singularity Scanner (Next.js)
+Documentation=https://github.com/nakiruu/singscanner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=singscanner
+Group=singscanner
+WorkingDirectory=/opt/singscanner
+EnvironmentFile=/opt/singscanner/.env
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=0.0.0.0
+
+ExecStart=/usr/bin/npm run start
+
+# Restart policy: bounce on crash, give up after 5 fast restarts in 60s
+Restart=on-failure
+RestartSec=3
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Hardening (LXC-friendly subset — full sandboxing fights some LXC defaults)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/singscanner/.next /opt/singscanner/node_modules/.prisma
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=singscanner
+
+[Install]
+WantedBy=multi-user.target

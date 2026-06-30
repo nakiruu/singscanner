@@ -1,0 +1,9 @@
+# Force LF on files that run on Linux servers, regardless of host OS.
+# Without this, Windows checkouts will store CRLF and break shell scripts:
+#   bash: /opt/singscanner/scripts/deploy.sh: /usr/bin/env: bad interpreter: ...^M
+
+*.sh        text eol=lf
+*.service   text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
