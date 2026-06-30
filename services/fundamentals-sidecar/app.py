@@ -1,20 +1,25 @@
-"""Fundamentals sidecar — direct Yahoo Finance quoteSummary client.
+"""Fundamentals sidecar — yfinance, throttled, background refresh.
 
-Anonymous Yahoo quoteSummary calls require a cookie+crumb authentication
-handshake. Without it, Yahoo returns 429 on every single request.
+The original Python project at singscannerml1/2 successfully uses yfinance
+against the same Yahoo endpoint that 429s our direct httpx attempt. The
+difference is:
 
-Handshake:
-  1. GET https://fc.yahoo.com (or https://finance.yahoo.com) — sets A1/A3 cookies
-  2. GET https://query2.finance.yahoo.com/v1/test/getcrumb with those cookies
-     returns a short crumb string
-  3. All subsequent quoteSummary calls include `&crumb=<crumb>` in the URL
+  * Calls are SEQUENTIAL with ~50-100ms between them. Yahoo allows ~10 r/s/IP.
+  * yfinance handles cookies / crumb / session reuse internally.
+  * Calls run in a thread (loop.run_in_executor), so the async event loop
+    doesn't hang on curl_cffi TLS.
+  * The actual scan path serves from an in-memory cache; a background task
+    keeps the cache fresh.
 
-The crumb stays valid until the cookies expire (~1 hour, observed). We refresh
-on 401/429 responses and on a periodic timer.
-
-If Yahoo continues blocking even with a valid crumb, the Unraid host IP is
-flagged. In that case switch to a real fundamentals API with a key (FMP,
-Finnhub, Polygon) — see the README.
+So this sidecar:
+  - On POST /fundamentals, returns immediately with whatever's cached.
+    Any uncached or stale symbol is appended to a refresh queue and skipped.
+  - A background worker pulls from the queue, fetches sequentially with a
+    100ms gap + 10s per-symbol timeout. It caches successes for 24h and
+    failures for 15min.
+  - First scan after boot: cache is empty -> everyone shows up in `skipped`,
+    and `Quality` falls back to 50. After ~30-60s the cache populates and
+    Quality starts to mean something.
 """
 
 from __future__ import annotations
@@ -25,111 +30,116 @@ import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
-import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel
+
+try:
+    import yfinance as yf  # type: ignore[import-untyped]
+except Exception:
+    yf = None  # type: ignore[assignment]
 
 log = logging.getLogger("fund")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-YAHOO_BASE = "https://query1.finance.yahoo.com/v10/finance/quoteSummary"
-YAHOO_COOKIE_URL = "https://fc.yahoo.com"
-YAHOO_CRUMB_URL = "https://query2.finance.yahoo.com/v1/test/getcrumb"
-MODULES = "financialData,defaultKeyStatistics,summaryDetail"
-
-UA = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36"
-)
-HTTP_TIMEOUT_S = 10.0
-CACHE_TTL_S = 24 * 3600       # 24h cache for successful fetches
-NEG_CACHE_TTL_S = 15 * 60     # 15min for failures — don't hammer Yahoo
-CRUMB_TTL_S = 30 * 60         # refresh crumb every 30 min proactively
-MAX_CONCURRENT = 3            # Yahoo is rate-aware; keep this LOW
+CACHE_TTL_S = 24 * 3600        # 24h cache for successes
+NEG_CACHE_TTL_S = 15 * 60      # 15min for failures
+PER_CALL_TIMEOUT_S = 10.0      # one yfinance call shouldn't take longer
+THROTTLE_S = 0.10              # ~10 req/s
+QUEUE_MAX = 5000
 
 # symbol -> (cache_ts, row_dict_or_None)
 _cache: dict[str, tuple[float, Optional[dict]]] = {}
 _cache_lock = asyncio.Lock()
-_sem: Optional[asyncio.Semaphore] = None
-_client: Optional[httpx.AsyncClient] = None
+
+_queue: asyncio.Queue[str] = asyncio.Queue()
+_in_queue: set[str] = set()
+_worker_task: Optional[asyncio.Task] = None
 _started_at: float = 0.0
-
-_crumb: Optional[str] = None
-_crumb_ts: float = 0.0
-_crumb_lock = asyncio.Lock()
+_fetches_ok = 0
+_fetches_fail = 0
 
 
-async def _refresh_crumb() -> bool:
-    """Run the cookie+crumb handshake. Returns True if we have a usable crumb."""
-    global _crumb, _crumb_ts
-    assert _client is not None
+def _safe_float(v) -> Optional[float]:
     try:
-        # Step 1: hit Yahoo for cookies. The actual response body doesn't matter,
-        # we want the Set-Cookie. fc.yahoo.com is dedicated for this; if it fails
-        # fall back to finance.yahoo.com which also sets the A1/A3 cookies.
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f:  # NaN
+        return None
+    return f
+
+
+def _fetch_sync(symbol: str) -> Optional[dict]:
+    """Blocking yfinance call. Runs in a worker thread via run_in_executor.
+    Returns the same dict shape as the API response, or None on failure."""
+    if yf is None:
+        return None
+    try:
+        t = yf.Ticker(symbol)
+        info = t.get_info() or {}
+    except Exception as e:
+        log.warning("yfinance %s threw: %s", symbol, e)
+        return None
+
+    g = info.get
+    de_raw = g("debtToEquity")
+    de: Optional[float] = _safe_float(de_raw)
+    # Yahoo flips between decimal and percent; >5 means percent → divide.
+    if isinstance(de, float) and de > 5:
+        de = de / 100.0
+
+    return {
+        "revenue_growth":  _safe_float(g("revenueGrowth")),
+        "earnings_growth": _safe_float(g("earningsGrowth"))
+                           or _safe_float(g("earningsQuarterlyGrowth")),
+        "profit_margin":   _safe_float(g("profitMargins")),
+        "roe":             _safe_float(g("returnOnEquity")),
+        "debt_to_equity":  de,
+        "forward_pe":      _safe_float(g("forwardPE")),
+    }
+
+
+async def _worker_loop() -> None:
+    """Pull symbols off the queue, fetch with timeout, cache, throttle."""
+    global _fetches_ok, _fetches_fail
+    log.info("background fetch worker started (yf=%s)", "ok" if yf else "MISSING")
+    loop = asyncio.get_running_loop()
+
+    while True:
+        symbol = await _queue.get()
         try:
-            await _client.get(YAHOO_COOKIE_URL)
-        except httpx.HTTPError:
-            await _client.get("https://finance.yahoo.com")
+            try:
+                row = await asyncio.wait_for(
+                    loop.run_in_executor(None, _fetch_sync, symbol),
+                    timeout=PER_CALL_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                row = None
+                log.warning("yfinance %s timed out", symbol)
 
-        # Step 2: pull a crumb. Comes back as a plain text body.
-        res = await _client.get(YAHOO_CRUMB_URL)
-        if res.status_code != 200 or not res.text or len(res.text) > 50:
-            log.warning("crumb fetch failed: status=%s body=%r", res.status_code, res.text[:80])
-            return False
-        crumb = res.text.strip()
-        if not crumb or "<" in crumb:  # got HTML, not a crumb
-            log.warning("crumb body looks wrong: %r", crumb[:80])
-            return False
-        _crumb = crumb
-        _crumb_ts = time.time()
-        log.info("crumb refreshed: %r (len=%d)", crumb[:10] + "…", len(crumb))
-        return True
-    except Exception as e:  # noqa: BLE001
-        log.warning("crumb refresh exception: %s", e)
-        return False
-
-
-async def _ensure_crumb() -> Optional[str]:
-    """Return a usable crumb, refreshing if stale or missing. Lock-protected."""
-    global _crumb
-    async with _crumb_lock:
-        if _crumb is not None and time.time() - _crumb_ts < CRUMB_TTL_S:
-            return _crumb
-        ok = await _refresh_crumb()
-        return _crumb if ok else None
-
-
-async def _invalidate_crumb() -> None:
-    global _crumb
-    async with _crumb_lock:
-        _crumb = None
+            async with _cache_lock:
+                _cache[symbol] = (time.time(), row)
+            if row is not None:
+                _fetches_ok += 1
+            else:
+                _fetches_fail += 1
+        finally:
+            _in_queue.discard(symbol)
+            _queue.task_done()
+            await asyncio.sleep(THROTTLE_S)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global _sem, _client, _started_at
+    global _worker_task, _started_at
     _started_at = time.time()
-    _sem = asyncio.Semaphore(MAX_CONCURRENT)
-    _client = httpx.AsyncClient(
-        timeout=httpx.Timeout(HTTP_TIMEOUT_S),
-        headers={
-            "User-Agent": UA,
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Origin": "https://finance.yahoo.com",
-            "Referer": "https://finance.yahoo.com/",
-        },
-        follow_redirects=True,
-    )
-    log.info("fundamentals sidecar booted")
-    # Warm the crumb once at startup — failures aren't fatal, will retry on demand.
-    await _refresh_crumb()
+    _worker_task = asyncio.create_task(_worker_loop())
+    log.info("fundamentals sidecar ready")
     try:
         yield
     finally:
-        if _client is not None:
-            await _client.aclose()
+        if _worker_task is not None:
+            _worker_task.cancel()
 
 
 app = FastAPI(title="singscanner-fundamentals", lifespan=lifespan)
@@ -154,101 +164,38 @@ class FundamentalsResponse(BaseModel):
     skipped: list[str]
 
 
-def _g(d: Optional[dict], key: str) -> Optional[float]:
-    if not isinstance(d, dict):
-        return None
-    v = d.get(key)
-    if isinstance(v, dict):
-        v = v.get("raw")
-    if isinstance(v, (int, float)):
-        return float(v)
-    return None
+def _is_fresh(ts: float, val: Optional[dict]) -> bool:
+    age = time.time() - ts
+    if val is not None:
+        return age < CACHE_TTL_S
+    return age < NEG_CACHE_TTL_S
 
 
-async def _fetch_one(symbol: str) -> Optional[dict]:
-    # Cache hit (positive or negative)
-    async with _cache_lock:
-        cached = _cache.get(symbol)
-        if cached:
-            ts, val = cached
-            age = time.time() - ts
-            if val is not None and age < CACHE_TTL_S:
-                return val
-            if val is None and age < NEG_CACHE_TTL_S:
-                return None
-
-    assert _client is not None and _sem is not None
-    row: Optional[dict] = None
-
-    async with _sem:
-        # Two-shot strategy: try with current crumb. If we get 401/429,
-        # invalidate the crumb, get a new one, and retry once.
-        for attempt in range(2):
-            crumb = await _ensure_crumb()
-            if crumb is None:
-                log.warning("no crumb available; cannot fetch %s", symbol)
-                break
-
-            url = f"{YAHOO_BASE}/{symbol}?modules={MODULES}&crumb={crumb}"
-            try:
-                res = await _client.get(url)
-            except (httpx.TimeoutException, httpx.RequestError) as e:
-                log.warning("fetch %s transport error: %s", symbol, type(e).__name__)
-                break
-
-            if res.status_code == 200:
-                try:
-                    doc = res.json()
-                    qs = doc.get("quoteSummary", {})
-                    results = qs.get("result")
-                    if results:
-                        modules = results[0] or {}
-                        fd = modules.get("financialData") or {}
-                        dks = modules.get("defaultKeyStatistics") or {}
-                        sd = modules.get("summaryDetail") or {}
-
-                        row = {
-                            "revenue_growth":  _g(fd, "revenueGrowth"),
-                            "earnings_growth": _g(fd, "earningsGrowth"),
-                            "profit_margin":   _g(fd, "profitMargins"),
-                            "roe":             _g(fd, "returnOnEquity"),
-                            "debt_to_equity":  _g(fd, "debtToEquity"),
-                            "forward_pe":      _g(sd, "forwardPE") or _g(dks, "forwardPE"),
-                        }
-                        de = row["debt_to_equity"]
-                        if de is not None and de > 5:
-                            row["debt_to_equity"] = de / 100.0
-                    break
-                except Exception as e:  # noqa: BLE001
-                    log.warning("fetch %s parse error: %s", symbol, e)
-                    break
-            elif res.status_code in (401, 429):
-                # Crumb may have expired or been revoked. Refresh and retry once.
-                log.warning("yahoo %s returned %d (attempt %d) — refreshing crumb",
-                            symbol, res.status_code, attempt + 1)
-                await _invalidate_crumb()
-                continue
-            else:
-                log.warning("yahoo %s returned %d", symbol, res.status_code)
-                break
-
-    async with _cache_lock:
-        _cache[symbol] = (time.time(), row)
-    return row
+async def _enqueue(symbol: str) -> None:
+    """Add to the refresh queue if not already there. Bounded."""
+    if symbol in _in_queue or _queue.qsize() >= QUEUE_MAX:
+        return
+    _in_queue.add(symbol)
+    try:
+        _queue.put_nowait(symbol)
+    except asyncio.QueueFull:
+        _in_queue.discard(symbol)
 
 
 @app.get("/health")
 def health() -> dict:
+    ok_count = sum(1 for _, v in _cache.values() if v is not None)
     return {
         "ok": True,
+        "yfinance": yf is not None,
         "started_at": _started_at,
         "cache_size": len(_cache),
-        "cache_success": sum(1 for _, v in _cache.values() if v is not None),
-        "cache_ttl_s": CACHE_TTL_S,
-        "neg_cache_ttl_s": NEG_CACHE_TTL_S,
-        "max_concurrent": MAX_CONCURRENT,
-        "has_crumb": _crumb is not None,
-        "crumb_age_s": int(time.time() - _crumb_ts) if _crumb else None,
+        "cache_success": ok_count,
+        "cache_fail": len(_cache) - ok_count,
+        "fetches_ok": _fetches_ok,
+        "fetches_fail": _fetches_fail,
+        "queue_depth": _queue.qsize(),
+        "throttle_s": THROTTLE_S,
     }
 
 
@@ -261,13 +208,19 @@ async def fundamentals(body: SymbolList) -> FundamentalsResponse:
     if not syms:
         return FundamentalsResponse(rows=[], skipped=[])
 
-    results = await asyncio.gather(*(_fetch_one(s) for s in syms))
-
     rows: list[FundamentalRow] = []
     skipped: list[str] = []
-    for sym, data in zip(syms, results):
-        if data is None:
-            skipped.append(sym)
+
+    async with _cache_lock:
+        cache_snapshot = dict(_cache)
+
+    for sym in syms:
+        entry = cache_snapshot.get(sym)
+        if entry is not None and _is_fresh(entry[0], entry[1]) and entry[1] is not None:
+            rows.append(FundamentalRow(symbol=sym, **entry[1]))
             continue
-        rows.append(FundamentalRow(symbol=sym, **data))
+        # not cached, or cached failure, or stale -> enqueue + skip for now
+        await _enqueue(sym)
+        skipped.append(sym)
+
     return FundamentalsResponse(rows=rows, skipped=skipped)
