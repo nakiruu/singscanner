@@ -39,6 +39,10 @@ COPY . .
 RUN npx prisma generate --no-hints
 RUN npm run build
 
+# Drop dev dependencies so the runner stage gets a lean production node_modules.
+# This is what lets us COPY the whole tree without bloating the image.
+RUN npm prune --omit=dev
+
 
 ############################
 # Stage 3 — runtime
@@ -60,13 +64,13 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 
-# Prisma needs the schema + the entire @prisma/* namespace at runtime.
-# (Hand-picking only @prisma/client breaks the CLI, which pulls in @prisma/engines,
-# @prisma/debug, @prisma/get-platform, etc.)
+# Prisma + its transitive deps at runtime.
+# Earlier attempts at hand-picking @prisma/* + prisma/ kept missing top-level
+# transitive deps (@prisma/config → effect, etc). Copying the full pruned
+# node_modules from the builder is the only reliable approach. npm prune in
+# the builder stage already stripped dev deps, so this stays reasonably small.
 COPY --from=builder --chown=nextjs:nodejs /app/prisma ./prisma
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/@prisma ./node_modules/@prisma
-COPY --from=builder --chown=nextjs:nodejs /app/node_modules/prisma ./node_modules/prisma
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
 
 # Entrypoint runs migrations then starts the server.
 COPY --chown=nextjs:nodejs docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
