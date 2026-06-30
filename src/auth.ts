@@ -7,6 +7,11 @@ import { prisma } from "@/lib/prisma";
 
 export const { auth, handlers, signIn, signOut } = NextAuth({
   adapter: PrismaAdapter(prisma),
+  // Trust the Host header from the reverse proxy (NPM in front of this app).
+  // Without this Auth.js v5 throws UntrustedHost whenever the request URL
+  // doesn't exactly match NEXTAUTH_URL — i.e. every time you switch domains
+  // or hit the LAN IP directly.
+  trustHost: true,
   session: { strategy: "jwt" },
   pages: { signIn: "/login" },
   providers: [
