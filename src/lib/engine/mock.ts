@@ -188,6 +188,7 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
       net: g.net,
       star: false,
       source: "mock",
+      exchange: "NASDAQ",
     };
   });
 

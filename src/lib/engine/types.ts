@@ -25,6 +25,7 @@ export interface ScanRow {
   net: number;         // bps
   star: boolean;
   source: string;      // alpaca | mock | yf
+  exchange?: string;   // NYSE | NASDAQ | etc — set by universe lookup
 }
 
 export interface ScanSnapshot {
