@@ -12,10 +12,11 @@ export function parseHorizon(spec: string): number {
   const m = spec.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)([mhd])$/);
   if (!m) throw new Error(`bad horizon: ${spec}`);
   const n = parseFloat(m[1]);
+  // Python parse_horizon floors result at 1 minute.
   switch (m[2]) {
-    case "m": return n;
-    case "h": return n * 60;
-    case "d": return n * 390;
+    case "m": return Math.max(1, n);
+    case "h": return Math.max(1, n * 60);
+    case "d": return Math.max(1, n * 6.5 * 60);
   }
   throw new Error(`unreachable`);
 }

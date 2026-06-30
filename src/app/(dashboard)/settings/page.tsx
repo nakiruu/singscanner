@@ -11,7 +11,7 @@ export default function SettingsPage() {
         <CardContent className="space-y-3 font-mono text-sm">
           <div className="flex justify-between">
             <span className="text-on-surface-variant">Horizon</span>
-            <span className="text-primary">3D</span>
+            <span className="text-primary">5D (locked)</span>
           </div>
           <div className="flex justify-between">
             <span className="text-on-surface-variant">Universe</span>

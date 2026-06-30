@@ -51,23 +51,34 @@ export function forecast({ signals, confidence, volAnn, edgeHorizonMin, calib }:
 }
 
 // ML boost adjustments. Returns new {confidence, evidence}.
-// Source: "ML boost" section.
+// Source: engine.py run_scan (lines ~881-896) — XGBoost boosts evidence,
+// Kronos confirms/disconfirms against the model's own p_up.
+//
+// Python:
+//   if ml_sc > 0:
+//       ml_boost = max(0, (ml_sc - 50)/50) * 0.4 + 1.0
+//       evidence *= ml_boost
+//   if kronos_pup is not None:
+//       if kronos_pup > 0.5 and fc.p_up > 0.5:
+//           confidence = min(1.0, confidence * 1.15); evidence *= 1.10
+//       elif kronos_pup < 0.5 and fc.p_up > 0.5:
+//           confidence *= 0.85
 export function applyMlBoost(
   base: { confidence: number; evidence: number },
   mlScore: number | null,
-  kronos: { p_up_a: number | null; p_up_b: number | null } | null,
+  kronosPUp: number | null,
+  modelPUp: number,
 ): { confidence: number; evidence: number } {
   let { confidence, evidence } = base;
-  if (mlScore != null && mlScore > 50) {
-    evidence *= 1 + ((mlScore - 50) / 50) * 0.4;
+  if (mlScore != null && mlScore > 0) {
+    const boost = Math.max(0, (mlScore - 50) / 50) * 0.4 + 1.0;
+    evidence *= boost;
   }
-  if (kronos && kronos.p_up_a != null && kronos.p_up_b != null) {
-    const agree = kronos.p_up_a > 0.5 && kronos.p_up_b > 0.5;
-    const disagree = (kronos.p_up_a > 0.5) !== (kronos.p_up_b > 0.5);
-    if (agree) {
-      confidence *= 1.15;
+  if (kronosPUp != null) {
+    if (kronosPUp > 0.5 && modelPUp > 0.5) {
+      confidence = Math.min(1.0, confidence * 1.15);
       evidence *= 1.10;
-    } else if (disagree) {
+    } else if (kronosPUp < 0.5 && modelPUp > 0.5) {
       confidence *= 0.85;
     }
   }

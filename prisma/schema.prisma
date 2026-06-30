@@ -87,7 +87,7 @@ model PortfolioEntry {
 model UserSettings {
   id           String  @id @default(cuid())
   userId       String  @unique
-  horizon      String  @default("3d")
+  horizon      String  @default("5d")
   universe     String  @default("auto")
   maxSymbols   Int     @default(300)
   alpacaKey    String?

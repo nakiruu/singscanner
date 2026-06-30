@@ -10,7 +10,7 @@ export function Topbar() {
         <span className="flex items-center gap-2">
           <span className="label-caps">Horizon:</span>
           <span className="inline-flex items-center rounded-md border border-border bg-surface-low px-2 py-0.5 font-mono text-xs font-semibold text-on-surface">
-            3d
+            5d
           </span>
         </span>
       </div>

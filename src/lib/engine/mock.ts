@@ -96,7 +96,12 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
     const f = forecast({ signals, confidence: confBase, volAnn, edgeHorizonMin: horizonMin, calib });
 
     const mlScore = rand() > 0.5 ? Math.round(rand() * 100) : null;
-    const boosted = applyMlBoost({ confidence: confBase, evidence: f.evidence }, mlScore, null);
+    const boosted = applyMlBoost(
+      { confidence: confBase, evidence: f.evidence },
+      mlScore,
+      null,
+      f.pUp,
+    );
 
     return {
       symbol,
@@ -144,6 +149,8 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
       role,
       roleEdge,
       friction,
+      frictionFloor: calib.frictionFloor,
+      frictionCeiling: calib.frictionCeiling,
       spreadBps: s.spreadBps,
       volPctPerBar: s.volPctPerBar,
       notional: s.notional,

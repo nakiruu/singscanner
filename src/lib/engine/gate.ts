@@ -7,7 +7,9 @@ import type { Decision, Role } from "./types";
 export interface GateInput {
   role: Role;
   roleEdge: number;          // bps for the role's band (primary/secondary/retained)
-  friction: number;          // role-specific friction multiplier
+  friction: number;          // role-specific friction multiplier (will be clamped to [frictionFloor, frictionCeiling])
+  frictionFloor: number;     // from Calibration
+  frictionCeiling: number;   // from Calibration
   spreadBps: number;
   volPctPerBar: number | null;   // fractional, e.g. 0.012 = 1.2%/bar; null if unknown
   notional: number;          // intended trade notional in $
@@ -44,7 +46,9 @@ function staleCost(ageSec: number): number {
 }
 
 export function gateDecision(g: GateInput): GateResult {
-  const modelEdge = g.roleEdge * g.friction;
+  // Python friction_mult() clamps the multiplier into [frictionFloor, frictionCeiling].
+  const fmult = clamp(g.friction, g.frictionFloor, g.frictionCeiling);
+  const modelEdge = g.roleEdge * fmult;
 
   // Held positions don't go through the BUY gate at all.
   if (g.isHeld) {

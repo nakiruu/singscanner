@@ -25,17 +25,27 @@ export interface StopTargetResult {
 
 export function computeStopTarget(i: StopTargetInput): StopTargetResult {
   const dailyVol = i.volAnn / Math.sqrt(252);
-  const atr = dailyVol * i.ref * Math.sqrt(i.holdingDays);
+  // Python compute_levels uses max(holding_days, 1) — guard against intraday horizons
+  // collapsing the sqrt term to zero.
+  const hdEff = Math.max(i.holdingDays, 1);
+  const atr = dailyVol * i.ref * Math.sqrt(hdEff);
 
   // Stop = ref - clamped(ATR-scaled stop in dollars)
-  const stopDollars = clamp(i.calib.stopAtrMult * atr, i.ref * 0.01, i.ref * i.calib.maxStopPct);
+  // Python order: first cap to maxStopPct, then floor at 1%.
+  let stopDollars = i.calib.stopAtrMult * atr;
+  stopDollars = Math.min(stopDollars, i.ref * i.calib.maxStopPct);
+  stopDollars = Math.max(stopDollars, i.ref * 0.01);
   const stop = i.ref - stopDollars;
 
   // Target move scales with daily vol, signal strength, and confidence.
   // clamp((composite-40)/30, 0.3, 1.2): below 40 we still want some target, above 70 we cap aggression.
   const compMult = clamp((i.composite - 40) / 30, 0.3, 1.2);
   const confMult = clamp(i.confidence, 0.5, 1.0);
-  const targetMove = 1.5 * dailyVol * Math.sqrt(i.holdingDays) * compMult * confMult;
+  // Python floors target_move_pct at 0.005 (+0.5%) so we never show a zero target.
+  const targetMove = Math.max(
+    1.5 * dailyVol * Math.sqrt(hdEff) * compMult * confMult,
+    0.005,
+  );
 
   // Floor target by minRR multiple of the risk leg so we never present a sub-minRR setup.
   const target = Math.max(i.ref * (1 + targetMove), i.ref + i.calib.minRR * (i.ref - stop));
@@ -56,9 +66,11 @@ export interface StarScoreInput {
 }
 
 // Composite "starworthiness". Top 5 BUYs by this score get star=true.
+// Python clamps net_surplus_bps to 0 (max(net, 0)) so negative-edge BUYs
+// can't compete for a star.
 export function starScore(i: StarScoreInput): number {
   return (
-    i.netSurplus *
+    Math.max(i.netSurplus, 0) *
     i.confidence *
     (Math.max(i.risk, 20) / 50) *
     (1 + i.targetUpPct / 20)

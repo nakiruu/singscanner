@@ -152,22 +152,22 @@ export function computeFamilies(rows: readonly RawSymbolInputs[]): SignalScores[
     ];
     const momentum = mean(momentumParts);
 
-    // ---- Quality: only meaningful if has_fundamentals; else neutral 50 ----
-    let quality: number;
-    if (!hasFundamentals(r)) {
-      quality = 50;
-    } else {
-      const parts: Array<number | null> = [
-        rankOrNull(r.revGrowth,    s_revG),
-        rankOrNull(r.earnGrowth,   s_earnG),
-        rankOrNull(r.profitMargin, s_margin),
-        rankOrNull(r.roe,          s_roe),
-        // debtToEquity and fwdPE: invert because lower is better
-        r.debtToEquity != null ? 100 - percentileRank(r.debtToEquity, s_de)    : null,
-        r.fwdPE        != null ? 100 - percentileRank(r.fwdPE,        s_fwdPE) : null,
-      ];
-      quality = meanDefined(parts);
-    }
+    // ---- Quality: average of whatever fundamental parts exist; 50 if none.
+    // Python engine.py score_symbol (~lines 426-444): `q_parts` are appended only
+    // when the field is non-null; `quality = fmean(q_parts) if q_parts else 50.0`.
+    // `has_fundamentals` is a SEPARATE flag (len(q_parts) >= 2) used only by
+    // confidence — it does NOT gate the quality score itself.
+    // Note: Python additionally guards forward_pe with `> 0`; we mirror that.
+    const qParts: Array<number | null> = [
+      rankOrNull(r.revGrowth,    s_revG),
+      rankOrNull(r.earnGrowth,   s_earnG),
+      rankOrNull(r.profitMargin, s_margin),
+      rankOrNull(r.roe,          s_roe),
+      // debtToEquity and fwdPE: invert because lower is better
+      r.debtToEquity != null ? 100 - percentileRank(r.debtToEquity, s_de) : null,
+      r.fwdPE != null && r.fwdPE > 0 ? 100 - percentileRank(r.fwdPE, s_fwdPE) : null,
+    ];
+    const quality = meanDefined(qParts);
 
     // ---- Liquidity ----
     // 100-spreadBps clamped 0..100 (so spread in bps interpreted as a "tightness" pctile)

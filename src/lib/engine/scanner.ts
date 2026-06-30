@@ -17,6 +17,7 @@ import { gateDecision } from "./gate";
 import { computeStopTarget, starScore } from "./levels";
 import type { ScanRow, ScanSnapshot, Role } from "./types";
 import { fetchSnapshots, type AlpacaSnapshot } from "@/lib/data/alpaca";
+import { predictXgb, type XgbInput } from "@/lib/ml/xgboost-client";
 import { buildMockSnapshot } from "./mock";
 
 const DEFAULT_UNIVERSE = [
@@ -54,11 +55,50 @@ function symbolHash(symbol: string, salt: number): number {
   return ((h >>> 0) / 0xffffffff);
 }
 
+// Build the XGBoost feature vector for one symbol from whatever we have.
+// Returns ALL feature keys (some null) so the sidecar's order-canonical mapping works.
+// TODO: populate ret_*, sma*, vol/beta/dd, fundamentals once history-bar + fundamentals
+// fetchers exist. Until then, only spread_bps and rel_volume are real — the sidecar
+// will skip rows missing ret_21d/ret_63d and return mlScore=null.
+function buildXgbFeatures(s: AlpacaSnapshot): XgbInput {
+  return {
+    symbol: s.symbol,
+    features: {
+      ret_21d: null,
+      ret_63d: null,
+      ret_126d: null,
+      ret_prev_21d: null,
+      accel: null,
+      trend_slope: null,
+      dist_sma50: null,
+      dist_sma200: null,
+      breakout: null,
+      realized_vol_ann: null,
+      beta: null,
+      max_drawdown_60d: null,
+      rel_volume: s.relVol ?? null,
+      spread_bps: s.spreadBps ?? null,
+      revenue_growth: null,
+      earnings_growth: null,
+      profit_margin: null,
+      roe: null,
+      debt_to_equity: null,
+      forward_pe: null,
+    },
+  };
+}
+
 // Produce a ScanSnapshot from real Alpaca snapshots + synthetic M/Q/L/R.
-function snapshotFromAlpaca(rows: AlpacaSnapshot[], horizonSpec: string): ScanSnapshot {
+async function snapshotFromAlpaca(rows: AlpacaSnapshot[], horizonSpec: string): Promise<ScanSnapshot> {
   const horizonMin = parseHorizon(horizonSpec);
   const calib = calibrate(horizonMin);
   const bucket = Math.floor(Date.now() / 30_000);
+
+  // Batch ml inference up front so each symbol's stage1 row gets its real mlScore.
+  // Fails open: if the sidecar is down or features are too thin, mlScore is null.
+  const xgbResp = await predictXgb(rows.map(buildXgbFeatures));
+  const mlScoreBySymbol = new Map<string, number>();
+  for (const r of xgbResp.rows) mlScoreBySymbol.set(r.symbol, r.ml_score);
 
   interface Stage1 {
     src: AlpacaSnapshot;
@@ -103,8 +143,13 @@ function snapshotFromAlpaca(rows: AlpacaSnapshot[], horizonSpec: string): ScanSn
       edgeHorizonMin: horizonMin,
       calib,
     });
-    const mlScore: number | null = null;
-    const boosted = applyMlBoost({ confidence: confBase, evidence: f.evidence }, mlScore, null);
+    const mlScore = mlScoreBySymbol.get(s.symbol) ?? null;
+    const boosted = applyMlBoost(
+      { confidence: confBase, evidence: f.evidence },
+      mlScore,
+      null, // kronosPUp — wired in a later phase
+      f.pUp,
+    );
 
     return {
       src: s,
@@ -139,6 +184,8 @@ function snapshotFromAlpaca(rows: AlpacaSnapshot[], horizonSpec: string): ScanSn
       role,
       roleEdge,
       friction,
+      frictionFloor: calib.frictionFloor,
+      frictionCeiling: calib.frictionCeiling,
       spreadBps: s.src.spreadBps,
       volPctPerBar: null,           // need intraday bars; treat as missing → C_liq floor 35.
       notional: 10_000,             // TODO: per-user sizing.
@@ -210,7 +257,7 @@ function snapshotFromAlpaca(rows: AlpacaSnapshot[], horizonSpec: string): ScanSn
 }
 
 async function refresh(): Promise<ScanSnapshot> {
-  const horizon = process.env.SCANNER_HORIZON ?? "3d";
+  const horizon = process.env.SCANNER_HORIZON ?? "5d";
 
   if (!useAlpaca()) return buildMockSnapshot(horizon);
 
@@ -221,7 +268,7 @@ async function refresh(): Promise<ScanSnapshot> {
       console.warn("[scanner] alpaca returned no snapshots, falling back to mock");
       return buildMockSnapshot(horizon);
     }
-    return snapshotFromAlpaca(snapshots, horizon);
+    return await snapshotFromAlpaca(snapshots, horizon);
   } catch (err) {
     console.warn("[scanner] alpaca failed, falling back to mock:", err);
     return buildMockSnapshot(horizon);
