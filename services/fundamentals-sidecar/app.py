@@ -123,20 +123,34 @@ def _load_seed() -> int:
 
 
 def _load_disk_cache() -> int:
-    """Load the persistent cache (writable, ours). Wins over seed."""
+    """Load the persistent cache (writable, ours).
+
+    IMPORTANT: a NEGATIVE entry in the disk cache (val=None, from a prior
+    yfinance 429) must NOT override a POSITIVE entry already loaded from the
+    seed. Otherwise a transient rate-limit storm permanently masks the seed.
+    Positives always override (newer real data > older seed data)."""
     if not CACHE_PATH.is_file():
         return 0
     try:
         raw = json.loads(CACHE_PATH.read_text())
         data = raw.get("data", raw)
-        n = 0
+        kept = skipped_neg = 0
         for sym, entry in data.items():
+            sym_u = sym.upper()
             ts = float(entry["ts"])
-            row = entry["row"]  # may be None for negative cache
-            _cache[sym.upper()] = (ts, row)
-            n += 1
-        log.info("disk cache loaded: %d symbols from %s", n, CACHE_PATH)
-        return n
+            row = entry["row"]
+            existing = _cache.get(sym_u)
+            if row is None and existing is not None and existing[1] is not None:
+                # Disk says "no data" but seed gave us real data — keep the seed.
+                skipped_neg += 1
+                continue
+            _cache[sym_u] = (ts, row)
+            kept += 1
+        log.info(
+            "disk cache loaded: %d entries kept, %d negatives ignored (seed positive won)",
+            kept, skipped_neg,
+        )
+        return kept
     except Exception as e:  # noqa: BLE001
         log.warning("disk cache load failed: %s", e)
         return 0
