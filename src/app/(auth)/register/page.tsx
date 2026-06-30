@@ -17,22 +17,29 @@ export default async function RegisterPage({
     "use server";
     const email = String(formData.get("email") ?? "").trim().toLowerCase();
     const password = String(formData.get("password") ?? "");
-    const name = String(formData.get("name") ?? "").trim() || null;
+    const username = String(formData.get("username") ?? "").trim();
 
-    if (!email || password.length < 8) {
+    // Username rules: 3-30 chars, letters / digits / underscore / hyphen.
+    // Tight enough to avoid clashes with URL paths and weird display.
+    const usernameOk = /^[A-Za-z0-9_-]{3,30}$/.test(username);
+    if (!email || password.length < 8 || !usernameOk) {
       redirect("/register?error=invalid");
     }
 
-    const existing = await prisma.user.findUnique({ where: { email } });
-    if (existing) {
-      redirect("/register?error=exists");
-    }
+    const existingEmail = await prisma.user.findUnique({ where: { email } });
+    if (existingEmail) redirect("/register?error=email-exists");
+
+    const existingUsername = await prisma.user.findUnique({ where: { username } });
+    if (existingUsername) redirect("/register?error=username-exists");
 
     const passwordHash = await bcrypt.hash(password, 12);
     await prisma.user.create({
       data: {
         email,
-        name,
+        username,
+        // Default the display name to the username so Auth.js session.user.name
+        // shows something sensible until the user sets a real name in settings.
+        name: username,
         passwordHash,
         settings: { create: {} },
       },
@@ -48,13 +55,15 @@ export default async function RegisterPage({
       </CardHeader>
       <CardContent>
         <form action={register} className="space-y-3">
-          <Field name="name" type="text" placeholder="Optional" label="Name" required={false} />
+          <Field name="username" type="text" placeholder="3-30 chars, a-z 0-9 _ -" label="Username" />
           <Field name="email" type="email" placeholder="you@example.com" label="Email" />
           <Field name="password" type="password" placeholder="8+ characters" label="Password" />
           {error && (
             <p className="font-mono text-xs text-error">
-              {error === "exists"
+              {error === "email-exists"
                 ? "An account with that email already exists."
+                : error === "username-exists"
+                ? "That username is taken."
                 : "Please check your inputs."}
             </p>
           )}

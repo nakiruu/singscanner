@@ -21,9 +21,15 @@ if [ -n "$DB_HOST" ]; then
   echo "[entrypoint] postgres reachable"
 fi
 
-# Apply any pending migrations. Safe to run every boot (no-op when up to date).
-echo "[entrypoint] running prisma migrate deploy"
-npx --no-install prisma migrate deploy
+# Sync the Prisma schema to the database. We use `db push` (not `migrate deploy`)
+# because we haven't generated migration files yet — db push applies the schema
+# directly, which is fine while iterating. Switch to migrate deploy once we
+# commit a prisma/migrations/ directory.
+#
+# We invoke the Prisma CLI entry directly so we don't depend on node_modules/.bin
+# being present in the runtime image.
+echo "[entrypoint] running prisma db push"
+node ./node_modules/prisma/build/index.js db push --skip-generate --accept-data-loss
 
 echo "[entrypoint] starting next server"
 exec node server.js
