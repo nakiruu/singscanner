@@ -23,6 +23,16 @@ services:
     image: singscanner-fundamentals:latest
     container_name: singscanner-fundamentals
     restart: unless-stopped
+    # Seed: the curated cache from the original Python project, shipped in the
+    # repo at models/. Read-only, used to pre-populate the cache so the scanner
+    # has Quality data BEFORE yfinance lets us back in.
+    # Cache: persistent named volume so refresh progress survives rebuilds.
+    volumes:
+      - ./models:/seed:ro
+      - fundamentals_cache:/cache
+    environment:
+      FUNDAMENTALS_SEED_PATH: /seed/fundamentals_seed.json
+      FUNDAMENTALS_CACHE_PATH: /cache/fundamentals.json
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
       interval: 30s
@@ -80,3 +90,4 @@ services:
 
 volumes:
   pgdata:
+  fundamentals_cache:
