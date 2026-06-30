@@ -70,7 +70,20 @@ export async function fetchSnapshots(symbols: string[]): Promise<AlpacaSnapshot[
     const bid = r.latestQuote.bp;
     const ask = r.latestQuote.ap;
     const mid = (bid + ask) / 2 || price;
-    const spreadBps = mid > 0 ? Math.max(0, ((ask - bid) / mid) * 10_000) : 0;
+    // When market is closed, Alpaca often returns bid=0/ask=0 (no live quote).
+    // A raw spread of 0 makes the liquidity family treat the symbol as having
+    // a perfect tight spread, which is wrong — we don't have a spread at all.
+    // Substitute a typical S&P-class spread (20 bps) so the gate cost and the
+    // liquidity rank are realistic. When the quote IS valid but unusually wide,
+    // cap at 200 bps so stale closed-market quotes don't crater the rank.
+    const hasValidQuote = bid > 0 && ask > 0 && mid > 0;
+    let spreadBps: number;
+    if (!hasValidQuote) {
+      spreadBps = 20;
+    } else {
+      const raw = Math.max(0, ((ask - bid) / mid) * 10_000);
+      spreadBps = Math.min(200, raw);
+    }
     const prevVol = r.prevDailyBar?.v ?? r.dailyBar.v;
     const relVol = prevVol > 0 ? r.dailyBar.v / prevVol : 1;
     const quoteAgeSec = Math.max(0, (now - new Date(r.latestQuote.t).getTime()) / 1000);

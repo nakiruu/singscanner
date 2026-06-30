@@ -111,7 +111,7 @@ export function LiveTerminal({ snapshot }: LiveTerminalProps) {
                 {row.price.toFixed(2)}
               </td>
               <td className="px-3 py-2 text-right font-mono tabular-nums text-primary">
-                {(row.spreadBps / 100).toFixed(2)}%
+                {row.spreadBps > 0 ? `${(row.spreadBps / 100).toFixed(2)}%` : "—"}
               </td>
               <td className="px-3 py-2 text-right font-mono tabular-nums text-on-surface-variant">
                 {row.relVol.toFixed(1)}x
@@ -150,7 +150,7 @@ export function LiveTerminal({ snapshot }: LiveTerminalProps) {
                   row.mlScore != null && row.mlScore >= 60 ? "text-primary" : "text-error"
                 )}
               >
-                {row.mlScore ?? "—"}
+                {row.mlScore != null ? `${Math.round(row.mlScore)}%` : "—"}
               </td>
               <td className="px-3 py-2">
                 <GateBar
