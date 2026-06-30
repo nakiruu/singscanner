@@ -32,6 +32,14 @@ export default async function RegisterPage({
     const existingUsername = await prisma.user.findUnique({ where: { username } });
     if (existingUsername) redirect("/register?error=username-exists");
 
+    // ADMIN_EMAILS bootstrap: anyone registering with a listed email is
+    // promoted to ADMIN on creation. Comma-separated, case-insensitive.
+    const adminList = (process.env.ADMIN_EMAILS ?? "")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    const role = adminList.includes(email) ? "ADMIN" : "USER";
+
     const passwordHash = await bcrypt.hash(password, 12);
     await prisma.user.create({
       data: {
@@ -41,6 +49,7 @@ export default async function RegisterPage({
         // shows something sensible until the user sets a real name in settings.
         name: username,
         passwordHash,
+        role,
         settings: { create: {} },
       },
     });

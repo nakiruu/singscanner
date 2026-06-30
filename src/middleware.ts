@@ -1,19 +1,55 @@
 import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 
-const PROTECTED = ["/dashboard", "/portfolio", "/settings", "/pipeline"];
+// Anything not in PUBLIC requires authentication.
+// Anything in PREMIUM_GATED additionally requires PREMIUM or ADMIN role.
+// /admin requires ADMIN role.
+const PUBLIC_EXACT = new Set(["/", "/login", "/register", "/upgrade"]);
+const PUBLIC_PREFIXES = ["/api/auth", "/_next", "/favicon", "/public"];
+
+const PREMIUM_GATED_PREFIXES = ["/dashboard", "/portfolio", "/pipeline", "/settings"];
+const ADMIN_GATED_PREFIXES = ["/admin"];
+
+function isPublic(pathname: string): boolean {
+  if (PUBLIC_EXACT.has(pathname)) return true;
+  return PUBLIC_PREFIXES.some((p) => pathname.startsWith(p));
+}
+
+function matchesPrefix(pathname: string, prefixes: string[]): boolean {
+  return prefixes.some((p) => pathname === p || pathname.startsWith(p + "/"));
+}
 
 export default auth((req) => {
   const { pathname } = req.nextUrl;
-  const isProtected = PROTECTED.some((p) => pathname === p || pathname.startsWith(p + "/"));
-  if (!isProtected) return NextResponse.next();
 
+  if (isPublic(pathname)) return NextResponse.next();
+
+  // Auth gate first.
   if (!req.auth) {
     const url = req.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("from", pathname);
     return NextResponse.redirect(url);
   }
+
+  const role = req.auth.user?.role ?? "USER";
+
+  // Admin gate.
+  if (matchesPrefix(pathname, ADMIN_GATED_PREFIXES) && role !== "ADMIN") {
+    const url = req.nextUrl.clone();
+    url.pathname = "/upgrade";
+    url.searchParams.set("reason", "admin-only");
+    return NextResponse.redirect(url);
+  }
+
+  // Premium gate.
+  if (matchesPrefix(pathname, PREMIUM_GATED_PREFIXES) && role !== "PREMIUM" && role !== "ADMIN") {
+    const url = req.nextUrl.clone();
+    url.pathname = "/upgrade";
+    url.searchParams.set("from", pathname);
+    return NextResponse.redirect(url);
+  }
+
   return NextResponse.next();
 });
 
