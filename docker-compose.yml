@@ -1,0 +1,44 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: singscanner-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: singscanner
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: singscanner
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U singscanner -d singscanner"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    image: singscanner:latest
+    container_name: singscanner-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://singscanner:${POSTGRES_PASSWORD:-changeme}@postgres:5432/singscanner?schema=public
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:-}
+      ALPACA_FEED: ${ALPACA_FEED:-iex}
+      SCANNER_HORIZON: ${SCANNER_HORIZON:-3d}
+      SCANNER_UNIVERSE: ${SCANNER_UNIVERSE:-auto}
+      SCANNER_MAX_SYMBOLS: ${SCANNER_MAX_SYMBOLS:-300}
+      SCANNER_INTERVAL_S: ${SCANNER_INTERVAL_S:-15}
+      SCANNER_MOCK: ${SCANNER_MOCK:-true}
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:

@@ -1,0 +1,17 @@
+.git
+.gitignore
+.gitattributes
+node_modules
+.next
+.env
+.env.local
+.env.*.local
+npm-debug.log*
+.DS_Store
+.vscode
+.idea
+.claude
+docs/dashinspo
+README.md
+**/*.md
+!prisma/**/*.md
