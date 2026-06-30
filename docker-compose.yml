@@ -4,10 +4,11 @@ services:
     image: singscanner-xgb:latest
     container_name: singscanner-xgb
     restart: unless-stopped
-    # The pretrained model lives in the repo at docs/xgboostold/. We mount it
-    # read-only at /models so the sidecar can pickle.load it on boot.
+    # The pretrained model lives in the repo at models/. We mount it read-only
+    # at /models so the sidecar can pickle.load it on boot. Drop in a newly
+    # trained xgb_model.pkl + restart the container to swap models.
     volumes:
-      - ./docs/xgboostold:/models:ro
+      - ./models:/models:ro
     environment:
       XGB_MODEL_PATH: /models/xgb_model.pkl
     healthcheck:
