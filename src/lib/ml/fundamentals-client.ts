@@ -48,7 +48,10 @@ export async function fetchFundamentals(symbols: string[]): Promise<Fundamentals
       const { fetchFundamentalsViaFmp } = await import("./fmp-fundamentals");
       return fetchFundamentalsViaFmp(symbols);
     }
-    return { rows: [], skipped: [...symbols] };
+    // No API key configured — fall back to Yahoo Finance (same source as the
+    // Python sidecar's yfinance calls, no auth required).
+    const { fetchFundamentalsViaYf } = await import("./yf-fundamentals");
+    return fetchFundamentalsViaYf(symbols);
   }
 
   const ctrl = new AbortController();
