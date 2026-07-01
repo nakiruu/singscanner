@@ -24,6 +24,7 @@ export interface ScanRow {
   cost: number;        // bps
   net: number;         // bps
   star: boolean;
+  starScore: number | null; // buy ranking metric (null for non-BUY rows)
   source: string;      // alpaca | mock | yf
   exchange?: string;   // NYSE | NASDAQ | etc — set by universe lookup
 }

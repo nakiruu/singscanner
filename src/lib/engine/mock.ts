@@ -187,38 +187,32 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
       cost: g.required,
       net: g.net,
       star: false,
+      starScore: null,
       source: "mock",
       exchange: "NASDAQ",
     };
   });
 
-  // Stars: top 5 BUYs by starScore.
+  // starScore for all BUY rows; top 5 starEligible BUYs get star=true.
   const holdingDays = Math.max(1, horizonMin / 390);
+  rows.forEach((r, i) => {
+    if (r.decision !== "BUY") return;
+    const st = computeStopTarget({
+      ref: r.price,
+      volAnn: stage1[i].volAnn,
+      holdingDays,
+      composite: r.composite,
+      confidence: r.confidence,
+      currentPrice: r.price,
+      calib,
+    });
+    const targetUpPct = ((st.target - r.price) / r.price) * 100;
+    r.starScore = starScore({ netSurplus: r.net, confidence: r.confidence, risk: r.risk, targetUpPct });
+  });
   const buyScored = rows
-    .map((r, i) => {
-      if (r.decision !== "BUY" || !assignments[i].starEligible) return null;
-      const st = computeStopTarget({
-        ref: r.price,
-        volAnn: stage1[i].volAnn,
-        holdingDays,
-        composite: r.composite,
-        confidence: r.confidence,
-        currentPrice: r.price,
-        calib,
-      });
-      const targetUpPct = ((st.target - r.price) / r.price) * 100;
-      const score = starScore({
-        netSurplus: r.net,
-        confidence: r.confidence,
-        risk: r.risk,
-        targetUpPct,
-      });
-      return { row: r, score };
-    })
-    .filter((x): x is { row: ScanRow; score: number } => x !== null)
-    .sort((a, b) => b.score - a.score);
-
-  buyScored.slice(0, 5).forEach((x) => (x.row.star = true));
+    .filter((r, i) => r.decision === "BUY" && assignments[i].starEligible && r.starScore != null)
+    .sort((a, b) => (b.starScore ?? 0) - (a.starScore ?? 0));
+  buyScored.slice(0, 5).forEach((r) => (r.star = true));
 
   return {
     generatedAt: new Date().toISOString(),

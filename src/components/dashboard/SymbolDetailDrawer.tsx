@@ -412,6 +412,17 @@ export function SymbolDetailDrawer({
                   {(row.pUp * 100).toFixed(1)}%
                 </div>
               </div>
+              {row.starScore != null && (
+                <div className="col-span-2">
+                  <div className="text-[9px] uppercase tracking-wider text-on-surface-variant">
+                    Buy Rank Score
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-primary tabular-nums">
+                    {row.starScore.toFixed(2)}
+                    {row.star && <span className="ml-1.5 text-sm text-[#FFD700]">★</span>}
+                  </div>
+                </div>
+              )}
             </div>
             <Button variant="primary" size="sm" disabled className="w-full">
               Execution wiring coming soon
