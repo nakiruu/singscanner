@@ -1,6 +1,8 @@
 // Thin client for the fundamentals sidecar.
 // Fails open: any network/transport error returns empty rows + everything
 // in skipped, so the scanner pipeline keeps running without fundamentals.
+// Fallback tier: if the sidecar is offline and FMP_API_KEY is set, the
+// request is forwarded to the direct FMP REST client (fmp-fundamentals.ts).
 
 export interface FundamentalRow {
   symbol: string;
@@ -42,6 +44,10 @@ async function pingHealth(): Promise<boolean> {
 export async function fetchFundamentals(symbols: string[]): Promise<FundamentalsResponse> {
   if (symbols.length === 0) return { rows: [], skipped: [] };
   if (!(await pingHealth())) {
+    if (process.env.FMP_API_KEY) {
+      const { fetchFundamentalsViaFmp } = await import("./fmp-fundamentals");
+      return fetchFundamentalsViaFmp(symbols);
+    }
     return { rows: [], skipped: [...symbols] };
   }
 
