@@ -3,7 +3,10 @@
 // scanner pipeline can keep running with mlScore=null.
 
 const FEATURE_COLS = [
+  // short-term lookbacks (ml2 additions — must appear FIRST to match training order)
+  "ret_3d", "ret_5d", "ret_10d",
   "ret_21d", "ret_63d", "ret_126d", "ret_prev_21d", "accel",
+  "short_accel",
   "trend_slope", "dist_sma50", "dist_sma200", "breakout",
   "realized_vol_ann", "beta", "max_drawdown_60d",
   "rel_volume", "spread_bps",

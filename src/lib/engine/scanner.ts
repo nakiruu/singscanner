@@ -87,16 +87,26 @@ function buildXgbFeatures(
     feats.ret_21d != null && feats.ret_prev_21d != null
       ? feats.ret_21d - feats.ret_prev_21d
       : null;
+  // ml2 short-term acceleration: ret_5d - ret_prev_5d
+  const shortAccel =
+    feats.ret_5d != null && feats.ret_prev_5d != null
+      ? feats.ret_5d - feats.ret_prev_5d
+      : null;
   const distSma50 = feats.sma50 && feats.sma50 > 0 ? price / feats.sma50 - 1 : null;
   const distSma200 = feats.sma200 && feats.sma200 > 0 ? price / feats.sma200 - 1 : null;
   const breakout = feats.high_60d && feats.high_60d > 0 ? price / feats.high_60d : null;
 
   const features: XgbFeatures = {
+    // ml2 short-term lookbacks (must appear FIRST to match training order)
+    ret_3d: feats.ret_3d,
+    ret_5d: feats.ret_5d,
+    ret_10d: feats.ret_10d,
     ret_21d: feats.ret_21d,
     ret_63d: feats.ret_63d,
     ret_126d: feats.ret_126d,
     ret_prev_21d: feats.ret_prev_21d,
     accel,
+    short_accel: shortAccel,
     trend_slope: feats.trend_slope,
     dist_sma50: distSma50,
     dist_sma200: distSma200,
