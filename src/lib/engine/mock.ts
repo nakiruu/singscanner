@@ -83,7 +83,7 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
                        - Math.min(momentum, quality, liquidity, risk);
 
     const confBase = computeConfidence({
-      source: "mock",
+      source: "alpaca", // mock simulates live Alpaca quality; avoid unknown-source haircut
       quoteAgeSec: rand() * 30,
       marketOpen: true,
       hasFundamentals: rand() > 0.2,
