@@ -40,6 +40,7 @@ export default function DashboardPage() {
             prevSnapshot={prevSnapshot}
             status={status}
             lastUpdate={lastUpdate}
+            onSelectSymbol={openDrawerBySymbol}
           />
         )}
         {view === "matrix" && <MatrixGrid snapshot={snapshot} />}

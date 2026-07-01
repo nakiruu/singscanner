@@ -1,26 +1,252 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
+  AlertTriangle,
   BarChart3,
+  Bell,
   Coins,
   Database,
   Layers,
   Radio,
+  Sparkles,
   Target,
   TrendingDown,
   TrendingUp,
+  Zap,
 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import type { Decision, ScanRow, ScanSnapshot } from "@/lib/engine/types";
+import type { Decision, Role, ScanRow, ScanSnapshot } from "@/lib/engine/types";
 
 export interface ExecutiveDashboardProps {
   snapshot: ScanSnapshot | null;
   prevSnapshot?: ScanSnapshot | null;
   status?: string;
   lastUpdate?: number | null;
+  onSelectSymbol?: (symbol: string) => void;
+}
+
+// -- activity feed types ----------------------------------------------------
+
+type AlertKind =
+  | "new-buy"
+  | "buy-lost"
+  | "evidence-up"
+  | "evidence-down"
+  | "role-up"
+  | "role-down";
+
+interface Alert {
+  id: string;
+  ts: number;
+  kind: AlertKind;
+  symbol: string;
+  description: string;
+}
+
+const ROLE_RANK: Record<Role, number> = {
+  none: 0,
+  retained: 1,
+  secondary: 2,
+  primary: 3,
+};
+
+function formatAlertAge(ageMs: number): string {
+  const sec = Math.max(0, Math.floor(ageMs / 1000));
+  if (sec < 5) return "just now";
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ago`;
+}
+
+interface AlertVisual {
+  Icon: typeof Bell;
+  tone: string;
+}
+
+function alertVisual(kind: AlertKind): AlertVisual {
+  switch (kind) {
+    case "new-buy":
+      return { Icon: Sparkles, tone: "text-primary" };
+    case "buy-lost":
+      return { Icon: TrendingDown, tone: "text-tertiary" };
+    case "evidence-up":
+      return { Icon: Zap, tone: "text-primary" };
+    case "evidence-down":
+      return { Icon: AlertTriangle, tone: "text-tertiary" };
+    case "role-up":
+      return { Icon: TrendingUp, tone: "text-primary" };
+    case "role-down":
+      return { Icon: TrendingDown, tone: "text-tertiary" };
+  }
+}
+
+function ActivityFeed({
+  snapshot,
+  prevSnapshot,
+  onSelectSymbol,
+}: {
+  snapshot: ScanSnapshot | null;
+  prevSnapshot: ScanSnapshot | null | undefined;
+  onSelectSymbol?: (symbol: string) => void;
+}) {
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [now, setNow] = useState<number>(() => Date.now());
+  const lastGenAtRef = useRef<string | null>(null);
+  const seqRef = useRef<number>(0);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    if (!snapshot || !prevSnapshot) {
+      if (snapshot) lastGenAtRef.current = snapshot.generatedAt;
+      return;
+    }
+    if (lastGenAtRef.current === snapshot.generatedAt) return;
+    lastGenAtRef.current = snapshot.generatedAt;
+
+    const prev = new Map<string, ScanRow>();
+    for (const r of prevSnapshot.rows) prev.set(r.symbol, r);
+
+    const emitted: Alert[] = [];
+    const ts = Date.now();
+    for (const curr of snapshot.rows) {
+      const p = prev.get(curr.symbol);
+      if (!p) continue;
+
+      // New BUY
+      if (p.decision !== "BUY" && curr.decision === "BUY") {
+        seqRef.current += 1;
+        emitted.push({
+          id: `${ts}-${seqRef.current}`,
+          ts,
+          kind: "new-buy",
+          symbol: curr.symbol,
+          description: `New BUY signal (μ ${formatBps(curr.mu)}, ev ${curr.evidence.toFixed(0)})`,
+        });
+      } else if (p.decision === "BUY" && curr.decision !== "BUY") {
+        seqRef.current += 1;
+        emitted.push({
+          id: `${ts}-${seqRef.current}`,
+          ts,
+          kind: "buy-lost",
+          symbol: curr.symbol,
+          description: `BUY → ${curr.decision}`,
+        });
+      }
+
+      // Evidence 95 crossings
+      if (p.evidence < 95 && curr.evidence >= 95) {
+        seqRef.current += 1;
+        emitted.push({
+          id: `${ts}-${seqRef.current}`,
+          ts,
+          kind: "evidence-up",
+          symbol: curr.symbol,
+          description: `Evidence crossed 95 (${curr.evidence.toFixed(0)})`,
+        });
+      } else if (p.evidence >= 95 && curr.evidence < 95) {
+        seqRef.current += 1;
+        emitted.push({
+          id: `${ts}-${seqRef.current}`,
+          ts,
+          kind: "evidence-down",
+          symbol: curr.symbol,
+          description: `Evidence dropped below 95 (${curr.evidence.toFixed(0)})`,
+        });
+      }
+
+      // Role transitions
+      const prevRank = ROLE_RANK[p.role];
+      const currRank = ROLE_RANK[curr.role];
+      if (currRank > prevRank) {
+        seqRef.current += 1;
+        emitted.push({
+          id: `${ts}-${seqRef.current}`,
+          ts,
+          kind: "role-up",
+          symbol: curr.symbol,
+          description: `Role promoted: ${p.role} → ${curr.role}`,
+        });
+      } else if (currRank < prevRank) {
+        seqRef.current += 1;
+        emitted.push({
+          id: `${ts}-${seqRef.current}`,
+          ts,
+          kind: "role-down",
+          symbol: curr.symbol,
+          description: `Role lost: ${p.role} → ${curr.role}`,
+        });
+      }
+    }
+
+    if (emitted.length === 0) return;
+    setAlerts((prev2) => {
+      const next = [...emitted.reverse(), ...prev2];
+      return next.length > 100 ? next.slice(0, 100) : next;
+    });
+  }, [snapshot, prevSnapshot]);
+
+  return (
+    <Card>
+      <CardHeader>
+        <span className="label-caps flex items-center gap-2">
+          <Bell className="h-3.5 w-3.5" />
+          Activity Feed
+        </span>
+        <div className="flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full bg-primary led-pulse" />
+          <span className="label-caps">LIVE</span>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {alerts.length === 0 ? (
+          <div className="flex h-24 items-center justify-center font-mono text-xs text-on-surface-variant">
+            No activity yet. New signals will show up here.
+          </div>
+        ) : (
+          <div className="max-h-[180px] overflow-y-auto">
+            {alerts.map((a) => {
+              const { Icon, tone } = alertVisual(a.kind);
+              const clickable = Boolean(onSelectSymbol);
+              return (
+                <div
+                  key={a.id}
+                  onClick={
+                    onSelectSymbol
+                      ? () => onSelectSymbol(a.symbol)
+                      : undefined
+                  }
+                  className={cn(
+                    "flex items-center gap-3 border-b border-border/40 py-1.5 last:border-0",
+                    clickable && "cursor-pointer hover:bg-surface-low"
+                  )}
+                >
+                  <Icon className={cn("h-3.5 w-3.5 shrink-0", tone)} />
+                  <span className="font-mono text-sm font-semibold text-on-surface shrink-0">
+                    {a.symbol}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-on-surface-variant">
+                    {a.description}
+                  </span>
+                  <span className="label-caps shrink-0 text-on-surface-variant">
+                    {formatAlertAge(now - a.ts)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 // -- helpers -----------------------------------------------------------------
@@ -757,6 +983,7 @@ export function ExecutiveDashboard({
   prevSnapshot,
   status,
   lastUpdate,
+  onSelectSymbol,
 }: ExecutiveDashboardProps): React.JSX.Element {
   const rows = snapshot?.rows ?? [];
 
@@ -766,6 +993,12 @@ export function ExecutiveDashboard({
         snapshot={snapshot}
         status={status}
         lastUpdate={lastUpdate}
+      />
+
+      <ActivityFeed
+        snapshot={snapshot}
+        prevSnapshot={prevSnapshot}
+        onSelectSymbol={onSelectSymbol}
       />
 
       <KpiRow rows={rows} />
