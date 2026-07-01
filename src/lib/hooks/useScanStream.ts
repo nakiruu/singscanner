@@ -1,26 +1,46 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ScanSnapshot } from "@/lib/engine/types";
+import type { ScanRow, ScanSnapshot } from "@/lib/engine/types";
 
 export type ScanStreamStatus = "idle" | "connecting" | "live" | "polling" | "error";
 
+// Per-symbol time series of a few key metrics across recent snapshots.
+// Newest sample is the last element. Kept short on purpose — these get
+// rendered in dense sparklines, not full charts.
+export interface SymbolHistorySample {
+  ts: number;     // ms epoch when the snapshot arrived
+  mu: number;     // bps
+  evidence: number;
+  net: number;    // bps
+  composite: number;
+}
+
 export interface UseScanStreamResult {
   snapshot: ScanSnapshot | null;
+  prevSnapshot: ScanSnapshot | null;        // previous full snapshot (for movers)
   status: ScanStreamStatus;
   lastUpdate: number | null;
+  history: Map<string, SymbolHistorySample[]>;
 }
 
 const POLL_MS = 5_000;
+const HISTORY_LEN = 30;   // ~last 30 snapshots ≈ 2.5min at 5s SSE tick
 
 /**
  * Subscribes to /api/scan/stream (SSE, event `snapshot`).
  * Falls back to polling /api/scan every 5s if SSE drops or errors.
+ * Also accumulates a short per-symbol history for sparklines + mover detection.
  */
 export function useScanStream(): UseScanStreamResult {
   const [snapshot, setSnapshot] = useState<ScanSnapshot | null>(null);
+  const [prevSnapshot, setPrevSnapshot] = useState<ScanSnapshot | null>(null);
   const [status, setStatus] = useState<ScanStreamStatus>("idle");
   const [lastUpdate, setLastUpdate] = useState<number | null>(null);
+  // History lives in a ref so we can update without re-rendering for every push;
+  // we expose a stable Map reference. Consumers that want reactive updates can
+  // depend on `lastUpdate`.
+  const historyRef = useRef<Map<string, SymbolHistorySample[]>>(new Map());
 
   const sseRef = useRef<EventSource | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -36,17 +56,32 @@ export function useScanStream(): UseScanStreamResult {
       }
     };
 
+    const pushHistory = (rows: readonly ScanRow[], ts: number) => {
+      const h = historyRef.current;
+      for (const r of rows) {
+        const arr = h.get(r.symbol) ?? [];
+        arr.push({ ts, mu: r.mu, evidence: r.evidence, net: r.net, composite: r.composite });
+        if (arr.length > HISTORY_LEN) arr.shift();
+        h.set(r.symbol, arr);
+      }
+    };
+
     const applySnapshot = (data: unknown) => {
       if (cancelled) return;
-      // Light-weight runtime guard. We trust the API shape (matches ScanSnapshot).
       if (
         data &&
         typeof data === "object" &&
         "rows" in data &&
         Array.isArray((data as ScanSnapshot).rows)
       ) {
-        setSnapshot(data as ScanSnapshot);
-        setLastUpdate(Date.now());
+        const snap = data as ScanSnapshot;
+        const ts = Date.now();
+        pushHistory(snap.rows, ts);
+        setSnapshot((prev) => {
+          setPrevSnapshot(prev);
+          return snap;
+        });
+        setLastUpdate(ts);
       }
     };
 
@@ -87,7 +122,6 @@ export function useScanStream(): UseScanStreamResult {
         });
 
         es.onerror = () => {
-          // Browser will auto-retry. If we have no data yet, kick polling so the UI lights up.
           if (!snapshot) {
             void startPolling();
           }
@@ -98,10 +132,8 @@ export function useScanStream(): UseScanStreamResult {
       }
     };
 
-    // Prefer SSE if EventSource is available.
     if (typeof window !== "undefined" && "EventSource" in window) {
       startSse();
-      // Safety net: if no snapshot in 4s, start polling alongside.
       fallbackTimerRef.current = setTimeout(() => {
         if (!cancelled && !snapshot) void startPolling();
       }, 4_000);
@@ -124,5 +156,11 @@ export function useScanStream(): UseScanStreamResult {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { snapshot, status, lastUpdate };
+  return {
+    snapshot,
+    prevSnapshot,
+    status,
+    lastUpdate,
+    history: historyRef.current,
+  };
 }
