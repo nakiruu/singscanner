@@ -54,9 +54,9 @@ const COLUMNS: ColumnDef[] = [
   { id: "role",       label: "Role",         width: "90px",  align: "left" },
   { id: "evidence",   label: "Evid",         width: "60px",  align: "right",  sortKey: "evidence" },
   { id: "mlScore",    label: "ML",           width: "60px",  align: "right",  sortKey: "mlScore" },
-  { id: "gate",       label: "Gate / Net",   width: "200px", align: "left",   sortKey: "net" },
-  { id: "decision",   label: "Decision",     width: "100px", align: "left",   sortKey: "decision" },
-  { id: "actions",    label: "",             width: "80px",  align: "right" },
+  { id: "gate",       label: "Gate / Net",   width: "230px", align: "left",   sortKey: "net" },
+  { id: "decision",   label: "Decision",     width: "110px", align: "left",   sortKey: "decision" },
+  { id: "actions",    label: "",             width: "60px",  align: "right" },
 ];
 
 const GRID_TEMPLATE = COLUMNS.map((c) => c.width).join(" ");
@@ -477,7 +477,12 @@ export function LiveTerminal({ snapshot, onSelectRow }: LiveTerminalProps) {
                       {row.mlScore != null ? `${Math.round(row.mlScore)}%` : "—"}
                     </div>
                     <div className="px-3">
-                      <GateBar modelEdge={row.modelEdge} required={row.cost} net={row.net} />
+                      <GateBar
+                        modelEdge={row.modelEdge}
+                        required={row.cost}
+                        net={row.net}
+                        width={140}
+                      />
                     </div>
                     <div className="px-3">
                       <DecisionBadge decision={row.decision} />

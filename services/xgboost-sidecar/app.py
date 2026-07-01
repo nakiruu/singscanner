@@ -1,4 +1,4 @@
-"""XGBoost inference sidecar for Singularity Scanner.
+"""XGBoost inference sidecar for JuniperFin.
 
 Single endpoint: POST /predict — takes a batch of feature rows, returns the
 sklearn predict_proba(class=1) for each, scaled to a 0..100 ml_score.

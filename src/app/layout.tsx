@@ -13,8 +13,8 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Singularity Scanner",
-  description: "Observing the machine. Real-time equity scanner with AI-augmented signals.",
+  title: "JuniperFin",
+  description: "JuniperFin — real-time equity scanner with AI-augmented signals.",
 };
 
 export default function RootLayout({

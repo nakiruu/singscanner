@@ -28,7 +28,7 @@ export default async function UpgradePage({
           <p className="text-sm leading-6 text-on-surface-variant">
             {adminOnly
               ? "This area is restricted to administrators."
-              : "Singularity Scanner is a paid membership. Subscribe to access the live scanner, portfolio overlay, and ML signals."}
+              : "JuniperFin is a paid membership. Subscribe to access the live scanner, portfolio overlay, and ML signals."}
           </p>
 
           {!adminOnly && (

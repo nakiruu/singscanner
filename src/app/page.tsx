@@ -13,8 +13,7 @@ export default function Home() {
             DESIGN.md frames the product as "observing the machine" for devs/AI engineers.
             Constraints: ~6-10 words for h1, ~20-30 words for the sub. Tight tracking. */}
         <h1 className="mt-8 max-w-2xl font-sans text-5xl font-semibold leading-tight tracking-tight sm:text-6xl">
-          {/* placeholder */}
-          Singularity Scanner
+          JuniperFin
         </h1>
         <p className="mt-6 max-w-xl text-base leading-7 text-on-surface-variant">
           {/* placeholder */}

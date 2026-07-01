@@ -7,6 +7,7 @@ import { ExecutiveDashboard } from "@/components/dashboard/views/ExecutiveDashbo
 import { HeatmapView } from "@/components/dashboard/views/HeatmapView";
 import { LiveTerminal } from "@/components/dashboard/views/LiveTerminal";
 import { MatrixGrid } from "@/components/dashboard/views/MatrixGrid";
+import { SignalMapView } from "@/components/dashboard/views/SignalMapView";
 import { VerticalStream } from "@/components/dashboard/views/VerticalStream";
 import { WatchlistView } from "@/components/dashboard/views/WatchlistView";
 import { useScanStream } from "@/lib/hooks/useScanStream";
@@ -47,6 +48,9 @@ export default function DashboardPage() {
         {view === "watchlist" && <WatchlistView snapshot={snapshot} />}
         {view === "heatmap" && (
           <HeatmapView snapshot={snapshot} onSelectSymbol={openDrawerBySymbol} />
+        )}
+        {view === "signal-map" && (
+          <SignalMapView snapshot={snapshot} onSelectSymbol={openDrawerBySymbol} />
         )}
       </div>
 

@@ -1,9 +1,9 @@
 "use client";
 
-import { Columns, Flame, Grid3X3, LayoutGrid, List, Star } from "lucide-react";
+import { Columns, Crosshair, Flame, Grid3X3, LayoutGrid, List, Star } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export type ScanView = "live" | "stream" | "exec" | "matrix" | "watchlist" | "heatmap";
+export type ScanView = "live" | "stream" | "exec" | "matrix" | "watchlist" | "heatmap" | "signal-map";
 
 export interface ScanTabsProps {
   value: ScanView;
@@ -19,8 +19,9 @@ const TABS: Array<{
   { id: "stream",    label: "Vertical Stream",     Icon: Columns },
   { id: "exec",      label: "Executive Dashboard", Icon: LayoutGrid },
   { id: "matrix",    label: "Matrix Grid",         Icon: Grid3X3 },
-  { id: "watchlist", label: "Watchlist",           Icon: Star },
-  { id: "heatmap",   label: "Heatmap",             Icon: Flame },
+  { id: "watchlist",  label: "Watchlist",           Icon: Star },
+  { id: "heatmap",    label: "Heatmap",             Icon: Flame },
+  { id: "signal-map", label: "Signal Map",          Icon: Crosshair },
 ];
 
 export function ScanTabs({ value, onChange }: ScanTabsProps) {

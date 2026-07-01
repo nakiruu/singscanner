@@ -5,7 +5,7 @@ export function Topbar() {
     <header className="flex h-16 items-center justify-between border-b border-border bg-surface-lowest/80 px-6 backdrop-blur">
       <div className="flex items-center gap-4">
         <h1 className="font-sans text-xl font-semibold text-on-surface">
-          Singularity Scanner
+          JuniperFin
         </h1>
         <span className="flex items-center gap-2">
           <span className="label-caps">Horizon:</span>

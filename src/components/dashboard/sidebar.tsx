@@ -26,7 +26,7 @@ export function Sidebar() {
       <div className="flex items-start gap-3 border-b border-border px-5 py-5">
         <span className="led-pulse mt-1.5 inline-block h-3 w-1 rounded-sm bg-primary" />
         <div className="flex flex-col">
-          <span className="font-sans text-lg font-semibold text-on-surface">Singularity</span>
+          <span className="font-sans text-lg font-semibold text-on-surface">JuniperFin</span>
           <span className="label-caps mt-0.5 text-on-surface-variant">Scan Engine Active</span>
         </div>
       </div>
