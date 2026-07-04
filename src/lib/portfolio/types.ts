@@ -38,4 +38,8 @@ export interface PortfolioOverlayRow {
   rr: number;
   decision: Decision;
   reason: string;
+  // Spec §30: when decision === "ROTATE", the destination symbol.
+  rotateTo?: string;
+  // Spec §30: net advantage of the best cleared rotation in bps (0 if none).
+  bestRotationBps?: number;
 }

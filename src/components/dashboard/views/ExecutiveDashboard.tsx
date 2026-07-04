@@ -257,6 +257,7 @@ const DECISION_COLORS: Record<Decision, string> = {
   HOLD: "bg-[#4F9DF0]",
   "HOLD-CASH": "bg-[#4F9DF0]",
   SELL: "bg-error",
+  ROTATE: "bg-[#A78BFA]",
 };
 
 const DECISION_TEXT_COLORS: Record<Decision, string> = {
@@ -265,6 +266,7 @@ const DECISION_TEXT_COLORS: Record<Decision, string> = {
   HOLD: "text-[#4F9DF0]",
   "HOLD-CASH": "text-[#4F9DF0]",
   SELL: "text-error",
+  ROTATE: "text-[#A78BFA]",
 };
 
 interface StatusVisual {
@@ -504,6 +506,7 @@ function DecisionDistribution({ rows }: { rows: readonly ScanRow[] }) {
     HOLD: 0,
     "HOLD-CASH": 0,
     SELL: 0,
+    ROTATE: 0,
   };
   for (const r of rows) counts[r.decision] += 1;
   const total = rows.length;

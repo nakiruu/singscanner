@@ -30,6 +30,7 @@ const DECISION_FILL: Record<Decision, string> = {
   "HOLD-CASH": "#4F9DF0",
   HOLD: "#4F9DF0",
   SELL: "#E2566B",
+  ROTATE: "#A78BFA",
 };
 
 const MARGIN = { top: 24, right: 24, bottom: 48, left: 56 };

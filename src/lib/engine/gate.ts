@@ -23,6 +23,13 @@ export interface GateInput {
   minHurdle: number;         // from Calibration (bps)
   isHeld: boolean;
   isMember: boolean;         // member of the long-side cohort (P_up>=memberPupMin & evidence>=thresh)
+  // Spec §59: action-memory / same-ticker reversal cost, decayed over edge horizon.
+  // Stateless engine — caller supplies the pre-decayed bps (0 when no recent
+  // opposite-side fill or memory disabled).
+  actionMemoryBps?: number;
+  // Spec §21: concentration penalty in bps subtracted from the raw model edge.
+  // Caller (portfolio-aware layer) supplies this; universe-wide scan leaves 0.
+  concentrationBps?: number;
 }
 
 export interface GateResult {
@@ -30,6 +37,8 @@ export interface GateResult {
   cEntry: number;
   cExit: number;
   cQueue: number;
+  cMemory: number;
+  cConcentration: number;
   required: number;
   net: number;
   decision: Decision;
@@ -57,6 +66,8 @@ export function gateDecision(g: GateInput): GateResult {
       cEntry: 0,
       cExit: 0,
       cQueue: 0,
+      cMemory: 0,
+      cConcentration: 0,
       required: 0,
       net: modelEdge,
       decision: "HOLD",
@@ -65,25 +76,28 @@ export function gateDecision(g: GateInput): GateResult {
 
   const sa = Math.min(1000, g.spreadBps);
 
-  // volPctPerBar missing -> spec says "C_liq floor 35 if vol missing"
-  // We compute C_liq normally if we have vol; otherwise use the 35 floor.
   const va = g.volPctPerBar != null ? 100 * g.volPctPerBar : 0;
-  const ua = g.barDollarVol > 0 ? g.notional / g.barDollarVol : 9;
+  // Spec §59: ua = notional/barDollarVol; when volume is missing and notional>0
+  // treat as full-size (ua=1) rather than free.
+  const hasBarVol = g.barDollarVol > 0;
+  const ua = hasBarVol ? g.notional / g.barDollarVol : (g.notional > 0 ? 1 : 0);
   const C_liq_natural = Math.min(120, 0.25 + 9 * Math.sqrt(Math.min(9, ua)));
-  const C_liq = g.volPctPerBar == null ? Math.max(35, C_liq_natural) : C_liq_natural;
+  // Spec §59: missing-liquidity floor of 35 fires when barDollarVol==0 with positive notional.
+  const C_liq = !hasBarVol && g.notional > 0 ? Math.max(35, C_liq_natural) : C_liq_natural;
 
   const C_stale = staleCost(g.quoteAgeSec);
-  // C_gap: gapDays of 1 (normal) contributes 0; each extra day adds 1.75bps, capped at 25.
   const C_gap = clamp((g.gapDays - 1) * 1.75, 0, 25);
 
   const C_side = (0.5 * sa + 0.10 * Math.min(200, va) + C_liq + C_stale) * g.sessionMult + C_gap;
   const cEntry = C_side;
-  const cExit  = 0.65 * C_side * g.exitReserve;
-  // C_queue: queueing risk grows with notional impact and away-from-regular sessions.
+  // Spec §59: BUY exit modeled at 0.65·C_side, then reserved at exit_reserve∈[0,1].
+  const cExit  = 0.65 * C_side * clamp(g.exitReserve, 0, 1);
   const cQueue = Math.min(60, 0.8 + 12 * ua + 4.5 * Math.max(0, g.sessionMult - 1));
+  const cMemory = Math.max(0, g.actionMemoryBps ?? 0);
+  const cConcentration = Math.max(0, g.concentrationBps ?? 0);
 
-  const required = Math.max(g.minHurdle, cEntry + cExit + cQueue + g.opRisk);
-  const net = modelEdge - g.cashWait - required;
+  const required = Math.max(g.minHurdle, cEntry + cExit + cQueue + cMemory + g.opRisk);
+  const net = modelEdge - cConcentration - g.cashWait - required;
 
   let decision: Decision;
   if (g.role === "none") {
@@ -97,5 +111,5 @@ export function gateDecision(g: GateInput): GateResult {
     decision = "HOLD-CASH";
   }
 
-  return { modelEdge, cEntry, cExit, cQueue, required, net, decision };
+  return { modelEdge, cEntry, cExit, cQueue, cMemory, cConcentration, required, net, decision };
 }

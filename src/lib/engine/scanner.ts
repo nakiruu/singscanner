@@ -19,6 +19,7 @@ import { computeConfidence } from "./confidence";
 import { assignRoles } from "./roles";
 import { gateDecision } from "./gate";
 import { computeStopTarget, starScore } from "./levels";
+import { buildTargetPortfolio } from "./portfolio";
 import {
   computeFamilies,
   hasFundamentals as familyHasFundamentals,
@@ -339,7 +340,9 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
   // Stage 7: gate per row using REAL session, vol-per-bar, dollar volume, gap.
   const sessionMult = sessionMultFor(clockState.phase, calib);
 
-  const out: ScanRow[] = stage1.map((s, i) => {
+  // Pass 1: gate each row WITHOUT concentration (we need net edges to build the
+  // target portfolio, then concentration bps come out of that).
+  const pass1 = stage1.map((s, i) => {
     const role = assignments[i].role;
     const { roleEdge, friction } = roleParams(role, calib);
     const isMember = s.evidence >= calib.evidenceThreshold && s.pUp >= calib.memberPupMin;
@@ -366,6 +369,59 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       isMember,
     });
 
+    return { role, roleEdge, isMember, g };
+  });
+
+  // Spec §57: build target portfolio via source-conviction. Only positive-net
+  // qualifying rows contribute; the rest fall to cash.
+  const portfolio = buildTargetPortfolio(
+    pass1.map((r, i) => ({
+      symbol: stage1[i].pack.symbol,
+      role: r.role,
+      roleEdgeBps: r.roleEdge,
+      netBps: r.g.net,
+      confidence: stage1[i].confidence,
+      isHeld: false,
+    })),
+    { gamma: calib.gamma },
+  );
+  const concByS = new Map<string, number>();
+  const weightByS = new Map<string, number>();
+  for (const w of portfolio.weights) {
+    concByS.set(w.symbol, w.concentrationBps);
+    weightByS.set(w.symbol, w.targetWeight);
+  }
+
+  // Pass 2: re-gate with concentration bps so decisions reflect the whole book.
+  const out: ScanRow[] = stage1.map((s, i) => {
+    const { role, roleEdge, friction } = { ...pass1[i], friction: roleParams(pass1[i].role, calib).friction };
+    const isMember = pass1[i].isMember;
+    const p = s.pack;
+    const concentrationBps = concByS.get(p.symbol) ?? 0;
+    const targetWeight = weightByS.get(p.symbol) ?? 0;
+
+    const g = gateDecision({
+      role,
+      roleEdge,
+      friction,
+      frictionFloor: calib.frictionFloor,
+      frictionCeiling: calib.frictionCeiling,
+      spreadBps: p.spreadBps,
+      volPctPerBar: p.feats.vol_pct_per_bar,
+      notional: 10_000,
+      barDollarVol: p.price * p.dailyVolume,
+      quoteAgeSec: p.quoteAgeSec,
+      gapDays: p.gapDays,
+      sessionMult,
+      exitReserve: calib.exitReserve,
+      opRisk: calib.opRisk,
+      cashWait: calib.cashWait,
+      minHurdle: calib.minHurdle,
+      isHeld: false,
+      isMember,
+      concentrationBps,
+    });
+
     return {
       symbol: p.symbol,
       price: p.price,
@@ -390,6 +446,8 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       starScore: null,
       source: "alpaca",
       exchange: p.exchange,
+      targetWeight,
+      concentrationBps,
     };
   });
 
@@ -420,6 +478,7 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
     universe: clockState.isOpen ? "alpaca-live" : `alpaca-${clockState.phase}`,
     symbolsScanned: out.length,
     rows: out.sort((a, b) => Number(b.star) - Number(a.star) || b.net - a.net),
+    cashWeight: portfolio.cashWeight,
   };
 }
 

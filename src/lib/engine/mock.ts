@@ -8,6 +8,7 @@ import { computeConfidence } from "./confidence";
 import { assignRoles } from "./roles";
 import { gateDecision } from "./gate";
 import { computeStopTarget, starScore } from "./levels";
+import { buildTargetPortfolio } from "./portfolio";
 import type { ScanRow, ScanSnapshot, Role } from "./types";
 
 const UNIVERSE = [
@@ -128,7 +129,7 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
   // First, pre-compute modelEdge ASSUMING primary friction so we can rank evenly.
   // This is what assignRoles needs to find the primary band. We then re-derive
   // role-specific friction inside gateDecision.
-  const provisionalEdges = stage1.map((s) => calib.edgePrimary * calib.frictionPrimary);
+  const provisionalEdges = stage1.map(() => calib.edgePrimary * calib.frictionPrimary);
   const assignments = assignRoles(
     stage1.map((s, i) => ({
       evidence: s.evidence,
@@ -139,16 +140,13 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
     calib,
   );
 
-  // Second pass: gate + stop/target per row.
-  const rows: ScanRow[] = stage1.map((s, i) => {
+  // Pass 1: gate rows without concentration.
+  const pass1 = stage1.map((s, i) => {
     const role = assignments[i].role;
     const { roleEdge, friction } = roleParams(role, calib);
     const isMember = s.evidence >= calib.evidenceThreshold && s.pUp >= calib.memberPupMin;
-
     const g = gateDecision({
-      role,
-      roleEdge,
-      friction,
+      role, roleEdge, friction,
       frictionFloor: calib.frictionFloor,
       frictionCeiling: calib.frictionCeiling,
       spreadBps: s.spreadBps,
@@ -164,6 +162,54 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
       minHurdle: calib.minHurdle,
       isHeld: s.isHeld,
       isMember,
+    });
+    return { role, roleEdge, isMember, g };
+  });
+
+  const portfolio = buildTargetPortfolio(
+    pass1.map((r, i) => ({
+      symbol: stage1[i].symbol,
+      role: r.role,
+      roleEdgeBps: r.roleEdge,
+      netBps: r.g.net,
+      confidence: stage1[i].confidence,
+      isHeld: stage1[i].isHeld,
+    })),
+    { gamma: calib.gamma },
+  );
+  const concByS = new Map<string, number>();
+  const weightByS = new Map<string, number>();
+  for (const w of portfolio.weights) {
+    concByS.set(w.symbol, w.concentrationBps);
+    weightByS.set(w.symbol, w.targetWeight);
+  }
+
+  // Pass 2: gate with concentration bps applied.
+  const rows: ScanRow[] = stage1.map((s, i) => {
+    const role = pass1[i].role;
+    const { roleEdge, friction } = roleParams(role, calib);
+    const isMember = pass1[i].isMember;
+    const concentrationBps = concByS.get(s.symbol) ?? 0;
+    const targetWeight = weightByS.get(s.symbol) ?? 0;
+
+    const g = gateDecision({
+      role, roleEdge, friction,
+      frictionFloor: calib.frictionFloor,
+      frictionCeiling: calib.frictionCeiling,
+      spreadBps: s.spreadBps,
+      volPctPerBar: s.volPctPerBar,
+      notional: s.notional,
+      barDollarVol: s.barDollarVol,
+      quoteAgeSec: s.quoteAgeSec,
+      gapDays: s.gapDays,
+      sessionMult: calib.sessionRegular,
+      exitReserve: calib.exitReserve,
+      opRisk: calib.opRisk,
+      cashWait: calib.cashWait,
+      minHurdle: calib.minHurdle,
+      isHeld: s.isHeld,
+      isMember,
+      concentrationBps,
     });
 
     return {
@@ -190,6 +236,8 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
       starScore: null,
       source: "mock",
       exchange: "NASDAQ",
+      targetWeight,
+      concentrationBps,
     };
   });
 
@@ -220,5 +268,6 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
     universe: "mock",
     symbolsScanned: rows.length,
     rows: rows.sort((a, b) => Number(b.star) - Number(a.star) || b.net - a.net),
+    cashWeight: portfolio.cashWeight,
   };
 }

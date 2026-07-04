@@ -63,13 +63,26 @@ export interface Calibration {
   gamma: number;
 }
 
+// Spec §59: baseline friction seeds are 0.30 for primary/secondary/retained.
+// The runtime multiplier surface adapts around that seed by role/regime/liquidity;
+// here we let the horizon slide it upward (never below 0.30) because a longer
+// hold has more path variance and deserves stricter discount.
+// Spec §60 anchor is 15-min; at 5d we lift toward ~0.55/0.48/0.42.
+//
+// Spec §59: exit_reserve = 1.00 (full modeled future exit cost reserved). We
+// never drop below that. Some horizon-adaptive cushion above 1.0 is allowed.
+//
+// Spec §17/§22/§59: cashWait is the opportunity cost of NOT waiting in cash.
+// It must be non-zero, otherwise BUYs never compete against cash. We scale by
+// horizon: short holds need only a small hurdle above cash; long holds must
+// clear a larger implied risk-free/SPY continuation.
 export function calibrate(horizonMin: number): Calibration {
   const t = horizonT(horizonMin);
   return {
-    frictionPrimary:   lerp(t, 0.28, 0.55),
-    frictionSecondary: lerp(t, 0.23, 0.48),
-    frictionRetained:  lerp(t, 0.18, 0.40),
-    exitReserve:       lerp(t, 1.00, 0.45),
+    frictionPrimary:   lerp(t, 0.30, 0.55),
+    frictionSecondary: lerp(t, 0.30, 0.48),
+    frictionRetained:  lerp(t, 0.30, 0.42),
+    exitReserve:       lerp(t, 1.00, 1.15),
     sessionRegular:    1.0,
     sessionExtended:   lerp(t, 1.50, 1.05),
     sessionClosed:     lerp(t, 2.00, 1.10),
@@ -90,7 +103,7 @@ export function calibrate(horizonMin: number): Calibration {
     retainFloor:       40,
     minHurdle:         0,
     opRisk:            5,
-    cashWait:          0,
+    cashWait:          lerp(t, 2, 25),
     minRR:             2.0,
     frictionFloor:     0.05,
     frictionCeiling:   1.0,

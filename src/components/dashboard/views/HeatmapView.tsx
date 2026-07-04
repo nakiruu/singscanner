@@ -19,6 +19,7 @@ const DECISION_COLOR: Record<Decision, string> = {
   HOLD: "#4F9DF0",
   "HOLD-CASH": "#4F9DF0",
   SELL: "#E2566B",
+  ROTATE: "#A78BFA",
 };
 
 const DECISION_ORDER: readonly Decision[] = ["BUY", "WAIT", "HOLD-CASH", "HOLD", "SELL"];
@@ -250,7 +251,7 @@ export function HeatmapView({ snapshot, onSelectSymbol }: HeatmapViewProps): JSX
 
   // Decision counts for legend chips (based on full rows, not the top-N cap).
   const decisionCounts = useMemo<Record<Decision, number>>(() => {
-    const c: Record<Decision, number> = { BUY: 0, WAIT: 0, "HOLD-CASH": 0, HOLD: 0, SELL: 0 };
+    const c: Record<Decision, number> = { BUY: 0, WAIT: 0, "HOLD-CASH": 0, HOLD: 0, SELL: 0, ROTATE: 0 };
     for (const r of rows) c[r.decision] = (c[r.decision] ?? 0) + 1;
     return c;
   }, [rows]);
