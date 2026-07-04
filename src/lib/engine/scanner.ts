@@ -5,16 +5,16 @@
 //   - ALPACA_API_KEY set -> real live pipeline
 //   - otherwise          -> mock
 //
-// Live pipeline (Wave 2):
-//   universe -> snapshots + daily bars + intraday bars + SPY bars + fundamentals
+// Live pipeline (SPECLIST §4-§8, §57):
+//   universe -> snapshots + daily/intraday/SPY bars + fundamentals
 //     -> computeBarFeatures per symbol
 //     -> computeFamilies (cross-sectional M/Q/L/R from real inputs)
-//     -> XGBoost features built from BarFeatures + fundamentals
-//     -> forecast / applyMlBoost / roles / gate / stars
-//   marketOpen + session phase come from real Alpaca clock.
+//     -> forecast / roles / target-portfolio / gate / stars
+//   marketOpen + session phase come from the real Alpaca clock.
+//   No ML booster / no XGBoost per SPECLIST §68 (validated non-ML surface).
 
 import { parseHorizon, calibrate } from "./horizon";
-import { forecast, applyMlBoost } from "./forecast";
+import { forecast } from "./forecast";
 import { computeConfidence } from "./confidence";
 import { assignRoles } from "./roles";
 import { gateDecision } from "./gate";
@@ -37,7 +37,6 @@ import {
 } from "@/lib/data/bars";
 import { getClock, type ClockState, type MarketPhase } from "@/lib/data/clock";
 import { fetchActiveUniverse, type UniverseEntry } from "@/lib/data/universe";
-import { predictXgb, type XgbInput, type XgbFeatures } from "@/lib/ml/xgboost-client";
 import { fetchFundamentals, type FundamentalRow } from "@/lib/ml/fundamentals-client";
 import { buildMockSnapshot } from "./mock";
 
@@ -72,59 +71,6 @@ function sessionMultFor(phase: MarketPhase, calib: ReturnType<typeof calibrate>)
     case "extended": return calib.sessionExtended;
     case "closed":   return calib.sessionClosed;
   }
-}
-
-// Build the canonical XGBoost feature vector from bar features + fundamentals.
-// Missing values stay null; the sidecar treats them as NaN (XGBoost handles natively).
-function buildXgbFeatures(
-  symbol: string,
-  price: number,
-  feats: BarFeatures,
-  fund: FundamentalRow | null,
-  relVol: number,
-  spreadBps: number,
-): XgbInput {
-  const accel =
-    feats.ret_21d != null && feats.ret_prev_21d != null
-      ? feats.ret_21d - feats.ret_prev_21d
-      : null;
-  // ml2 short-term acceleration: ret_5d - ret_prev_5d
-  const shortAccel =
-    feats.ret_5d != null && feats.ret_prev_5d != null
-      ? feats.ret_5d - feats.ret_prev_5d
-      : null;
-  const distSma50 = feats.sma50 && feats.sma50 > 0 ? price / feats.sma50 - 1 : null;
-  const distSma200 = feats.sma200 && feats.sma200 > 0 ? price / feats.sma200 - 1 : null;
-  const breakout = feats.high_60d && feats.high_60d > 0 ? price / feats.high_60d : null;
-
-  const features: XgbFeatures = {
-    // ml2 short-term lookbacks (must appear FIRST to match training order)
-    ret_3d: feats.ret_3d,
-    ret_5d: feats.ret_5d,
-    ret_10d: feats.ret_10d,
-    ret_21d: feats.ret_21d,
-    ret_63d: feats.ret_63d,
-    ret_126d: feats.ret_126d,
-    ret_prev_21d: feats.ret_prev_21d,
-    accel,
-    short_accel: shortAccel,
-    trend_slope: feats.trend_slope,
-    dist_sma50: distSma50,
-    dist_sma200: distSma200,
-    breakout,
-    realized_vol_ann: feats.realized_vol_ann,
-    beta: feats.beta_vs_spy,
-    max_drawdown_60d: feats.max_drawdown_60d,
-    rel_volume: relVol,
-    spread_bps: spreadBps,
-    revenue_growth: fund?.revenue_growth ?? null,
-    earnings_growth: fund?.earnings_growth ?? null,
-    profit_margin: fund?.profit_margin ?? null,
-    roe: fund?.roe ?? null,
-    debt_to_equity: fund?.debt_to_equity ?? null,
-    forward_pe: fund?.forward_pe ?? null,
-  };
-  return { symbol, features };
 }
 
 interface SymbolPack {
@@ -218,7 +164,7 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
 
   // Stage 2: assemble per-symbol packs, computing BarFeatures.
   // Drop symbols missing the bare-minimum history (ret_21d AND ret_63d) — the
-  // cross-sectional families and the XGBoost model can't say anything useful.
+  // cross-sectional families can't say anything useful without them.
   const packs: SymbolPack[] = [];
   for (const snap of snapshots) {
     const daily: DailyBar[] | undefined = dailyMap.get(snap.symbol);
@@ -248,15 +194,8 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
   const rawInputs: RawSymbolInputs[] = packs.map(rawInputsFor);
   const families = computeFamilies(rawInputs);
 
-  // Stage 4: XGBoost batch predict.
-  const xgbInputs: XgbInput[] = packs.map((p) =>
-    buildXgbFeatures(p.symbol, p.price, p.feats, p.fund, p.relVol, p.spreadBps),
-  );
-  const xgbResp = await predictXgb(xgbInputs);
-  const mlByS = new Map<string, number>();
-  for (const r of xgbResp.rows) mlByS.set(r.symbol, r.ml_score);
-
-  // Stage 5: per-symbol pipeline (confidence → forecast → ML boost).
+  // Stage 4: per-symbol pipeline (confidence → forecast).
+  // SPECLIST §68: the practical implementation is deliberately non-ML.
   interface Stage1Row {
     pack: SymbolPack;
     signals: { momentum: number; quality: number; liquidity: number; risk: number };
@@ -265,7 +204,6 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
     confidence: number;
     mu: number;
     evidence: number;
-    mlScore: number | null;
     volAnn: number;
   }
 
@@ -280,7 +218,7 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       [p.feats.ret_21d, p.feats.ret_63d, p.feats.ret_126d, p.feats.beta_vs_spy,
        p.feats.realized_vol_ann, p.feats.max_drawdown_60d].filter((x) => x == null).length;
 
-    const confBase = computeConfidence({
+    const confidence = computeConfidence({
       source: "alpaca",
       quoteAgeSec: p.quoteAgeSec,
       marketOpen: clockState.isOpen,
@@ -296,29 +234,20 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
 
     const f = forecast({
       signals,
-      confidence: confBase,
+      confidence,
       volAnn,
       edgeHorizonMin: horizonMin,
       calib,
     });
-
-    const mlScore = mlByS.get(p.symbol) ?? null;
-    const boosted = applyMlBoost(
-      { confidence: confBase, evidence: f.evidence },
-      mlScore,
-      null, // kronosPUp — Phase C
-      f.pUp,
-    );
 
     return {
       pack: p,
       signals,
       composite: f.composite,
       pUp: f.pUp,
-      confidence: Math.min(boosted.confidence, 1),
+      confidence: Math.min(confidence, 1),
       mu: f.mu,
-      evidence: boosted.evidence,
-      mlScore,
+      evidence: f.evidence,
       volAnn,
     };
   });
@@ -436,7 +365,6 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       confidence: s.confidence,
       mu: s.mu,
       evidence: s.evidence,
-      mlScore: s.mlScore,
       role,
       decision: g.decision,
       modelEdge: g.modelEdge,

@@ -1,5 +1,9 @@
 // Forecast: composite -> P_up -> mu, evidence.
-// Source: docs/instructions2.md "Forecast"
+// Source: SPECLIST §6 (expected return), §8 (confidence), §57 (source-conviction).
+//
+// The engine is deliberately non-ML per SPECLIST §68: the practical implementation
+// keeps trading behavior on the validated source-selector surface and does not
+// depend on a black-box booster. Signal families (§4) are the sole evidence input.
 
 import { sigmoid } from "./stats";
 import type { Calibration } from "./horizon";
@@ -44,43 +48,10 @@ export function forecast({ signals, confidence, volAnn, edgeHorizonMin, calib }:
   const pUp = sigmoid((comp - 50) / 18);
   const horizonFrac = edgeHorizonMin / TRADING_MIN_PER_YEAR;
   const condUpside = volAnn * Math.sqrt(horizonFrac) * 10_000; // bps
+  // SPECLIST §6: positive_edge = max(P_up - 0.5, 0) · conditional_upside.
   const posEdge = Math.max(pUp - 0.5, 0) * condUpside;
+  // SPECLIST §8: μ_adj = q · μ + (1-q) · 0 (conservative shrinkage toward zero).
   const mu = confidence * posEdge;
   const evidence = confidence * Math.max(comp - 50, 0) * calib.evidenceScale;
   return { composite: comp, pUp, condUpside, posEdge, mu, evidence };
-}
-
-// ML boost adjustments. Returns new {confidence, evidence}.
-// Source: engine.py run_scan (lines ~881-896) — XGBoost boosts evidence,
-// Kronos confirms/disconfirms against the model's own p_up.
-//
-// Python:
-//   if ml_sc > 0:
-//       ml_boost = max(0, (ml_sc - 50)/50) * 0.4 + 1.0
-//       evidence *= ml_boost
-//   if kronos_pup is not None:
-//       if kronos_pup > 0.5 and fc.p_up > 0.5:
-//           confidence = min(1.0, confidence * 1.15); evidence *= 1.10
-//       elif kronos_pup < 0.5 and fc.p_up > 0.5:
-//           confidence *= 0.85
-export function applyMlBoost(
-  base: { confidence: number; evidence: number },
-  mlScore: number | null,
-  kronosPUp: number | null,
-  modelPUp: number,
-): { confidence: number; evidence: number } {
-  let { confidence, evidence } = base;
-  if (mlScore != null && mlScore > 0) {
-    const boost = Math.max(0, (mlScore - 50) / 50) * 0.4 + 1.0;
-    evidence *= boost;
-  }
-  if (kronosPUp != null) {
-    if (kronosPUp > 0.5 && modelPUp > 0.5) {
-      confidence = Math.min(1.0, confidence * 1.15);
-      evidence *= 1.10;
-    } else if (kronosPUp < 0.5 && modelPUp > 0.5) {
-      confidence *= 0.85;
-    }
-  }
-  return { confidence, evidence };
 }

@@ -37,7 +37,7 @@ export default async function UpgradePage({
                 "Real-time M·Q·L·R signals across 300+ symbols",
                 "After-cost gate with model edge / net surplus",
                 "Portfolio overlay: stop, target, R:R",
-                "ML + Kronos boost signals",
+                "Source-conviction target portfolio + rotation surface",
                 "Live SSE stream — no manual refresh",
               ].map((line) => (
                 <li key={line} className="flex items-start gap-2 text-on-surface-variant">

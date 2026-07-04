@@ -929,8 +929,6 @@ function SidecarHealth({ snapshot }: { snapshot: ScanSnapshot | null }) {
   }, []);
 
   const rows = snapshot?.rows ?? [];
-  const xgbUp = rows.some((r) => r.mlScore !== null);
-  const xgbCount = rows.filter((r) => r.mlScore !== null).length;
   const fundUp = rows.some((r) => r.quality !== 50);
 
   return (
@@ -947,16 +945,6 @@ function SidecarHealth({ snapshot }: { snapshot: ScanSnapshot | null }) {
           health={apiOk}
           detail={apiDetail}
           Icon={Database}
-        />
-        <HealthRow
-          label="XGBoost"
-          health={xgbUp ? "up" : rows.length === 0 ? "unknown" : "down"}
-          detail={
-            rows.length === 0
-              ? "no rows yet"
-              : `${xgbCount}/${rows.length} rows scored`
-          }
-          Icon={Activity}
         />
         <HealthRow
           label="Fundamentals"

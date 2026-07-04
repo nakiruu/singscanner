@@ -26,7 +26,6 @@ const HEADERS: ReadonlyArray<{ id: string; label: string; align?: "left" | "righ
   { id: "mu", label: "μ bps", align: "right" },
   { id: "role", label: "Role", align: "left" },
   { id: "evid", label: "Evid", align: "right" },
-  { id: "ml", label: "ML", align: "right" },
   { id: "gate", label: "Gate / Net Surplus", align: "left" },
   { id: "decision", label: "Decision", align: "left" },
 ];
@@ -161,14 +160,6 @@ export function WatchlistView({ snapshot }: WatchlistViewProps) {
                 )}
               >
                 {Math.round(row.evidence)}
-              </td>
-              <td
-                className={cn(
-                  "px-3 py-2 text-right font-mono tabular-nums",
-                  row.mlScore != null && row.mlScore >= 60 ? "text-primary" : "text-error",
-                )}
-              >
-                {row.mlScore != null ? `${Math.round(row.mlScore)}%` : "—"}
               </td>
               <td className="px-3 py-2">
                 <GateBar

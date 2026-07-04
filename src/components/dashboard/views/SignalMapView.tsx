@@ -108,10 +108,11 @@ export function SignalMapView({ snapshot, onSelectSymbol }: SignalMapViewProps):
 
     const points: Point[] = [];
     for (const row of selected) {
-      // Rows without mlScore can't be placed on the Y-axis — skip them.
-      if (row.mlScore == null || !Number.isFinite(row.mlScore)) continue;
+      // SPECLIST §4-§6: Y-axis is the M/Q/L/R composite (0..100). This is the
+      // model's own conviction score — replaced the old opaque ML score.
+      if (!Number.isFinite(row.composite)) continue;
       const cx = MARGIN.left + ((row.net - xMin) / xRange) * plotW;
-      const cy = MARGIN.top + plotH - ((row.mlScore - yMin) / yRange) * plotH;
+      const cy = MARGIN.top + plotH - ((row.composite - yMin) / yRange) * plotH;
       points.push({ row, cx, cy, r: dotRadius(row) });
     }
     return { xMin, xMax, yMin, yMax, points, plotW, plotH };
@@ -133,7 +134,7 @@ export function SignalMapView({ snapshot, onSelectSymbol }: SignalMapViewProps):
   const xTicks = useMemo(() => niceTicks(xMin, xMax, 6), [xMin, xMax]);
   const yTicks = [0, 25, 50, 75, 100];
 
-  const skippedNoMl = selected.length - points.length;
+  const skippedNoComposite = selected.length - points.length;
 
   if (!snapshot) {
     return (
@@ -151,16 +152,16 @@ export function SignalMapView({ snapshot, onSelectSymbol }: SignalMapViewProps):
         <div className="flex items-center gap-3">
           <span className="label-caps">Signal Map</span>
           <span className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
-            Top-right = strongest gate & ML combined
+            Top-right = strongest gate & composite combined
           </span>
         </div>
         <div className="flex items-center gap-4">
           <FilterToggle value={filter} onChange={setFilter} />
           <span className="font-mono text-xs text-on-surface-variant tabular-nums">
             {points.length.toString().padStart(3, "0")} plotted
-            {skippedNoMl > 0 && (
+            {skippedNoComposite > 0 && (
               <span className="ml-1 text-terminal-gray">
-                ({skippedNoMl} missing ML)
+                ({skippedNoComposite} missing composite)
               </span>
             )}
           </span>
@@ -177,7 +178,7 @@ export function SignalMapView({ snapshot, onSelectSymbol }: SignalMapViewProps):
           height={height}
           viewBox={`0 0 ${width} ${height}`}
           role="img"
-          aria-label="Gate score vs ML score scatter plot"
+          aria-label="Gate net surplus vs composite score scatter plot"
         >
           {/* Grid lines */}
           {yTicks.map((t) => {
@@ -250,28 +251,28 @@ export function SignalMapView({ snapshot, onSelectSymbol }: SignalMapViewProps):
             x={MARGIN.left + plotW - 10}
             y={MARGIN.top + 20}
             anchor="end"
-            text="STRONG GATE · HIGH ML"
+            text="STRONG GATE · HIGH COMP"
             tone="emerald"
           />
           <QuadrantLabel
             x={MARGIN.left + 10}
             y={MARGIN.top + 20}
             anchor="start"
-            text="WEAK GATE · HIGH ML"
+            text="WEAK GATE · HIGH COMP"
             tone="dim"
           />
           <QuadrantLabel
             x={MARGIN.left + plotW - 10}
             y={MARGIN.top + plotH - 8}
             anchor="end"
-            text="STRONG GATE · LOW ML"
+            text="STRONG GATE · LOW COMP"
             tone="dim"
           />
           <QuadrantLabel
             x={MARGIN.left + 10}
             y={MARGIN.top + plotH - 8}
             anchor="start"
-            text="WEAK GATE · LOW ML"
+            text="WEAK GATE · LOW COMP"
             tone="error"
           />
 
@@ -319,7 +320,7 @@ export function SignalMapView({ snapshot, onSelectSymbol }: SignalMapViewProps):
             fill="rgba(255,255,255,0.5)"
             style={{ textTransform: "uppercase" }}
           >
-            ML Score (%)
+            Composite (0-100)
           </text>
 
           {/* X axis */}
@@ -587,7 +588,7 @@ function ScatterTooltip({
       </div>
       <dl className="mt-2 space-y-1 font-mono text-xs">
         <TooltipRow label="net" value={`${row.net >= 0 ? "+" : ""}${row.net.toFixed(1)} bps`} />
-        <TooltipRow label="ML" value={row.mlScore != null ? `${Math.round(row.mlScore)}%` : "—"} />
+        <TooltipRow label="comp" value={`${Math.round(row.composite)}`} />
         <TooltipRow label="μ" value={`${row.mu >= 0 ? "+" : ""}${row.mu.toFixed(1)} bps`} />
         <TooltipRow label="conf" value={`${Math.round(row.confidence * 100)}%`} />
       </dl>

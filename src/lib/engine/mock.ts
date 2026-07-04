@@ -3,7 +3,7 @@
 // the real forecast/roles/gate/star pipeline so the UI sees realistic shapes.
 
 import { parseHorizon, calibrate } from "./horizon";
-import { forecast, applyMlBoost } from "./forecast";
+import { forecast } from "./forecast";
 import { computeConfidence } from "./confidence";
 import { assignRoles } from "./roles";
 import { gateDecision } from "./gate";
@@ -61,7 +61,6 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
     confidence: number;
     mu: number;
     evidence: number;
-    mlScore: number | null;
     volAnn: number;
     quoteAgeSec: number;
     notional: number;
@@ -96,14 +95,6 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
 
     const f = forecast({ signals, confidence: confBase, volAnn, edgeHorizonMin: horizonMin, calib });
 
-    const mlScore = rand() > 0.5 ? Math.round(rand() * 100) : null;
-    const boosted = applyMlBoost(
-      { confidence: confBase, evidence: f.evidence },
-      mlScore,
-      null,
-      f.pUp,
-    );
-
     return {
       symbol,
       price: Number((50 + rand() * 400).toFixed(2)),
@@ -112,10 +103,9 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
       momentum, quality, liquidity, risk,
       composite: f.composite,
       pUp: f.pUp,
-      confidence: Math.min(boosted.confidence, 1.0),
+      confidence: Math.min(confBase, 1.0),
       mu: f.mu,
-      evidence: boosted.evidence,
-      mlScore,
+      evidence: f.evidence,
       volAnn,
       quoteAgeSec: rand() * 30,
       notional: 10_000 + rand() * 40_000,
@@ -226,7 +216,6 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
       confidence: s.confidence,
       mu: s.mu,
       evidence: s.evidence,
-      mlScore: s.mlScore,
       role,
       decision: g.decision,
       modelEdge: g.modelEdge,

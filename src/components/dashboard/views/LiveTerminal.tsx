@@ -30,7 +30,6 @@ type SortKey =
   | "confidence"
   | "mu"
   | "evidence"
-  | "mlScore"
   | "net"
   | "decision";
 
@@ -53,7 +52,6 @@ const COLUMNS: ColumnDef[] = [
   { id: "mu",         label: "μ bps",        width: "75px",  align: "right",  sortKey: "mu" },
   { id: "role",       label: "Role",         width: "90px",  align: "left" },
   { id: "evidence",   label: "Evid",         width: "60px",  align: "right",  sortKey: "evidence" },
-  { id: "mlScore",    label: "ML",           width: "60px",  align: "right",  sortKey: "mlScore" },
   { id: "gate",       label: "Gate / Net",   width: "230px", align: "left",   sortKey: "net" },
   { id: "decision",   label: "Decision",     width: "110px", align: "left",   sortKey: "decision" },
   { id: "actions",    label: "",             width: "60px",  align: "right" },
@@ -84,11 +82,6 @@ function compareRows(a: ScanRow, b: ScanRow, sort: SortState): number {
     case "confidence":return (a.confidence - b.confidence) * dir;
     case "mu":        return (a.mu - b.mu) * dir;
     case "evidence":  return (a.evidence - b.evidence) * dir;
-    case "mlScore": {
-      const av = a.mlScore ?? -Infinity;
-      const bv = b.mlScore ?? -Infinity;
-      return (av - bv) * dir;
-    }
     case "net":       return (a.net - b.net) * dir;
     case "price":     return (a.price - b.price) * dir;
   }
@@ -467,14 +460,6 @@ export function LiveTerminal({ snapshot, onSelectRow }: LiveTerminalProps) {
                       )}
                     >
                       {Math.round(row.evidence)}
-                    </div>
-                    <div
-                      className={cn(
-                        "px-3 text-right font-mono tabular-nums",
-                        row.mlScore != null && row.mlScore >= 60 ? "text-primary" : "text-error",
-                      )}
-                    >
-                      {row.mlScore != null ? `${Math.round(row.mlScore)}%` : "—"}
                     </div>
                     <div className="px-3">
                       <GateBar

@@ -17,7 +17,6 @@ export interface ScanRow {
   confidence: number;
   mu: number;          // bps
   evidence: number;
-  mlScore: number | null;
   role: Role;
   decision: Decision;
   modelEdge: number;   // bps
