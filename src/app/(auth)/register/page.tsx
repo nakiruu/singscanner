@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { AuthError } from "next-auth";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { signIn } from "@/auth";
@@ -54,7 +55,18 @@ export default async function RegisterPage({
       },
     });
 
-    await signIn("credentials", { email, password, redirectTo: "/dashboard" });
+    // Auto sign-in after registration. If this fails for any reason (rare —
+    // usually a DB blip or JWT signing hiccup) the user account HAS been
+    // created, so we route them to /login with a hint to sign in manually
+    // instead of surfacing a raw error page.
+    try {
+      await signIn("credentials", { email, password, redirectTo: "/dashboard" });
+    } catch (err) {
+      if (err instanceof AuthError) {
+        redirect(`/login?error=post-register&from=/dashboard`);
+      }
+      throw err;
+    }
   }
 
   return (
