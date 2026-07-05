@@ -252,11 +252,15 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
       horizonLadder,
       crossesWeekend: s.gapDays >= 3,
       gapDays: s.gapDays,
+      // Populated below for BUY rows.
+      stopPx: 0,
+      stopLimitPx: 0,
+      fairValueTargetPx: 0,
+      takeProfitLimitPx: 0,
     };
   });
 
-  // starScore for BUYs using fair-value upside (not the legacy minRR-inflated
-  // target). Top 5 starEligible BUYs get star=true.
+  // Compute price levels + starScore for BUY rows using fair-value upside.
   const holdingDays = Math.max(1, horizonMin / 390);
   rows.forEach((r, i) => {
     if (r.decision !== "BUY") return;
@@ -270,6 +274,10 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
       spreadBps: r.spreadBps,
       calib,
     });
+    r.stopPx = st.stop;
+    r.stopLimitPx = st.stopLimit;
+    r.fairValueTargetPx = st.fairValueTarget;
+    r.takeProfitLimitPx = st.takeProfitLimit;
     const targetUpPct = ((st.fairValueTarget - r.price) / r.price) * 100;
     r.starScore = starScore({ netSurplus: r.net, confidence: r.confidence, risk: r.risk, targetUpPct });
   });

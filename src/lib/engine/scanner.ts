@@ -406,12 +406,16 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       horizonLadder,
       crossesWeekend,
       gapDays: p.gapDays,
+      // Populated below for BUY rows.
+      stopPx: 0,
+      stopLimitPx: 0,
+      fairValueTargetPx: 0,
+      takeProfitLimitPx: 0,
     };
   });
 
-  // Stage 8: starScore for all BUY rows using fair-value upside (not the
-  // minRR-inflated legacy target), so top-of-book reflects honest expected
-  // return per SPECLIST §6.
+  // Stage 8: compute price levels + starScore for BUY rows. Uses fair-value
+  // upside (not the minRR-inflated legacy target) per SPECLIST §6.
   const holdingDays = Math.max(1, horizonMin / 390);
   out.forEach((r, i) => {
     if (r.decision !== "BUY") return;
@@ -425,6 +429,10 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       spreadBps: r.spreadBps,
       calib,
     });
+    r.stopPx = st.stop;
+    r.stopLimitPx = st.stopLimit;
+    r.fairValueTargetPx = st.fairValueTarget;
+    r.takeProfitLimitPx = st.takeProfitLimit;
     const targetUpPct = ((st.fairValueTarget - r.price) / r.price) * 100;
     r.starScore = starScore({ netSurplus: r.net, confidence: r.confidence, risk: r.risk, targetUpPct });
   });

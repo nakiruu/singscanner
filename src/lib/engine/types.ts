@@ -57,6 +57,18 @@ export interface ScanRow {
   // can pick their own hold.
   horizonLadder: HorizonRung[];
 
+  // Price levels for the row's primary horizon (SPECLIST §11/§15/§26).
+  // Populated for BUY rows; 0 for non-BUY (WAIT/HOLD-CASH) since no exit
+  // planning applies there.
+  //   stopPx        = protective trigger price (ATR-scaled from ref).
+  //   stopLimitPx   = paired limit price (below trigger by a full spread).
+  //   fairValueTargetPx = vol-implied target price (honest, no minRR clamp).
+  //   takeProfitLimitPx = TP limit price (inside fair value by ½ spread).
+  stopPx: number;
+  stopLimitPx: number;
+  fairValueTargetPx: number;
+  takeProfitLimitPx: number;
+
   // Carry / gap warnings (§16). true when the current bar-to-next-session
   // gap crosses a weekend/holiday, so exit-EV should be discounted.
   crossesWeekend: boolean;

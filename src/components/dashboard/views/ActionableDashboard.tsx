@@ -413,9 +413,10 @@ function BuyPickRow({
   onToggle: () => void;
   onDecisionClick: () => void;
 }) {
-  const rung = row.horizonLadder.find((r) => r.horizonSpec === "5d") ?? row.horizonLadder[0];
-  const targetPx = rung?.fairValueTarget ?? row.price;
-  const upsidePct = ((targetPx - row.price) / row.price) * 100;
+  const targetPx = row.takeProfitLimitPx > 0 ? row.takeProfitLimitPx : row.fairValueTargetPx;
+  const upsidePct = targetPx > 0 ? ((targetPx - row.price) / row.price) * 100 : 0;
+  const stopPx = row.stopLimitPx > 0 ? row.stopLimitPx : row.stopPx;
+  const downsidePct = stopPx > 0 ? ((row.price - stopPx) / row.price) * 100 : 0;
 
   return (
     <li>
@@ -450,13 +451,21 @@ function BuyPickRow({
           </span>
         </div>
 
-        {/* Price + upside */}
+        {/* Price + TP + SL */}
         <div className="col-span-3 flex flex-col text-right font-mono tabular-nums">
           <span className="text-on-surface">${row.price.toFixed(2)}</span>
-          <span className="text-[11px] text-success">
-            → ${targetPx.toFixed(2)}{" "}
-            <span className="text-on-surface-variant">(+{upsidePct.toFixed(1)}%)</span>
-          </span>
+          {targetPx > 0 && (
+            <span className="text-[11px] text-success">
+              TP ${targetPx.toFixed(2)}{" "}
+              <span className="text-on-surface-variant">(+{upsidePct.toFixed(1)}%)</span>
+            </span>
+          )}
+          {stopPx > 0 && (
+            <span className="text-[11px] text-error">
+              SL ${stopPx.toFixed(2)}{" "}
+              <span className="text-on-surface-variant">(−{downsidePct.toFixed(1)}%)</span>
+            </span>
+          )}
         </div>
 
         {/* Gate net / confidence */}
@@ -568,6 +577,41 @@ function RowDetails({ id, row }: { id: string; row: ScanRow }) {
         </DetailBlock>
       </div>
 
+      {/* Stops — SPECLIST §11/§15. Only for BUY rows (levels are 0 otherwise). */}
+      {(row.stopPx > 0 || row.fairValueTargetPx > 0) && (
+        <div className="mt-4 space-y-2 border-t border-border pt-3">
+          <span className="label-caps">Stops @ {row.price.toFixed(2)}</span>
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+            <PriceLevelTile
+              label="TP fair value"
+              price={row.fairValueTargetPx}
+              refPx={row.price}
+              tone="pos"
+            />
+            <PriceLevelTile
+              label="TP limit"
+              price={row.takeProfitLimitPx}
+              refPx={row.price}
+              tone="pos"
+              subtitle="inside fair value by ½ spread"
+            />
+            <PriceLevelTile
+              label="SL trigger"
+              price={row.stopPx}
+              refPx={row.price}
+              tone="neg"
+            />
+            <PriceLevelTile
+              label="SL limit"
+              price={row.stopLimitPx}
+              refPx={row.price}
+              tone="neg"
+              subtitle="paired below trigger by a full spread"
+            />
+          </div>
+        </div>
+      )}
+
       {/* Horizon ladder + warnings */}
       <div className="mt-4 space-y-2 border-t border-border pt-3">
         <div className="flex items-baseline gap-3">
@@ -600,6 +644,61 @@ function RowDetails({ id, row }: { id: string; row: ScanRow }) {
           })}
         </div>
       </div>
+    </div>
+  );
+}
+
+// A single price-level tile — used by the Stops block. Shows the price and
+// the signed % distance from the reference price so users can eyeball risk.
+function PriceLevelTile({
+  label,
+  price,
+  refPx,
+  tone,
+  subtitle,
+}: {
+  label: string;
+  price: number;
+  refPx: number;
+  tone: "pos" | "neg";
+  subtitle?: string;
+}) {
+  if (price <= 0) {
+    return (
+      <div className="rounded border border-border bg-surface-low px-3 py-2 opacity-50">
+        <div className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+          {label}
+        </div>
+        <div className="mt-0.5 font-mono text-sm tabular-nums text-on-surface-variant">
+          —
+        </div>
+      </div>
+    );
+  }
+  const deltaPct = ((price - refPx) / refPx) * 100;
+  const sign = deltaPct >= 0 ? "+" : "";
+  return (
+    <div className="rounded border border-border bg-surface-low px-3 py-2">
+      <div className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+        {label}
+      </div>
+      <div className="mt-0.5 font-mono text-sm tabular-nums text-on-surface">
+        ${price.toFixed(2)}
+      </div>
+      <div
+        className={cn(
+          "font-mono text-[11px] tabular-nums",
+          tone === "pos" ? "text-success" : "text-error",
+        )}
+      >
+        {sign}
+        {deltaPct.toFixed(1)}%
+      </div>
+      {subtitle && (
+        <div className="mt-0.5 font-mono text-[10px] text-on-surface-variant">
+          {subtitle}
+        </div>
+      )}
     </div>
   );
 }
