@@ -7,9 +7,15 @@ import { forecast } from "./forecast";
 import { computeConfidence } from "./confidence";
 import { assignRoles } from "./roles";
 import { gateDecision } from "./gate";
-import { computeStopTarget, starScore } from "./levels";
+import {
+  computeStopTarget,
+  computeHorizonLadder,
+  DEFAULT_HORIZON_RUNGS,
+  starScore,
+} from "./levels";
 import { buildTargetPortfolio } from "./portfolio";
 import type { ScanRow, ScanSnapshot, Role } from "./types";
+import type { ConfidenceFactors } from "./confidence";
 
 const UNIVERSE = [
   "NVDA","AMD","TSLA","AAPL","MSFT","META","AMZN","GOOGL","AVGO","CRWD",
@@ -59,6 +65,7 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
     composite: number;
     pUp: number;
     confidence: number;
+    confidenceFactors: ConfidenceFactors;
     mu: number;
     evidence: number;
     volAnn: number;
@@ -82,7 +89,7 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
     const familySpread = Math.max(momentum, quality, liquidity, risk)
                        - Math.min(momentum, quality, liquidity, risk);
 
-    const confBase = computeConfidence({
+    const conf = computeConfidence({
       source: "alpaca", // mock simulates live Alpaca quality; avoid unknown-source haircut
       quoteAgeSec: rand() * 30,
       marketOpen: true,
@@ -93,7 +100,7 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
       horizonMin,
     });
 
-    const f = forecast({ signals, confidence: confBase, volAnn, edgeHorizonMin: horizonMin, calib });
+    const f = forecast({ signals, confidence: conf.value, volAnn, edgeHorizonMin: horizonMin, calib });
 
     return {
       symbol,
@@ -103,7 +110,8 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
       momentum, quality, liquidity, risk,
       composite: f.composite,
       pUp: f.pUp,
-      confidence: Math.min(confBase, 1.0),
+      confidence: Math.min(conf.value, 1.0),
+      confidenceFactors: conf.factors,
       mu: f.mu,
       evidence: f.evidence,
       volAnn,
@@ -202,6 +210,14 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
       concentrationBps,
     });
 
+    const horizonLadder = computeHorizonLadder({
+      ref: s.price,
+      volAnn: s.volAnn,
+      composite: s.composite,
+      confidence: s.confidence,
+      rungs: DEFAULT_HORIZON_RUNGS,
+    });
+
     return {
       symbol: s.symbol,
       price: s.price,
@@ -214,23 +230,33 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
       composite: s.composite,
       pUp: s.pUp,
       confidence: s.confidence,
+      confidenceFactors: s.confidenceFactors,
       mu: s.mu,
       evidence: s.evidence,
+      volAnn: s.volAnn,
       role,
       decision: g.decision,
       modelEdge: g.modelEdge,
       cost: g.required,
       net: g.net,
+      cEntry: g.cEntry,
+      cExit: g.cExit,
+      cQueue: g.cQueue,
+      cMemory: g.cMemory,
+      concentrationBps,
       star: false,
       starScore: null,
       source: "mock",
       exchange: "NASDAQ",
       targetWeight,
-      concentrationBps,
+      horizonLadder,
+      crossesWeekend: s.gapDays >= 3,
+      gapDays: s.gapDays,
     };
   });
 
-  // starScore for all BUY rows; top 5 starEligible BUYs get star=true.
+  // starScore for BUYs using fair-value upside (not the legacy minRR-inflated
+  // target). Top 5 starEligible BUYs get star=true.
   const holdingDays = Math.max(1, horizonMin / 390);
   rows.forEach((r, i) => {
     if (r.decision !== "BUY") return;
@@ -241,9 +267,10 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
       composite: r.composite,
       confidence: r.confidence,
       currentPrice: r.price,
+      spreadBps: r.spreadBps,
       calib,
     });
-    const targetUpPct = ((st.target - r.price) / r.price) * 100;
+    const targetUpPct = ((st.fairValueTarget - r.price) / r.price) * 100;
     r.starScore = starScore({ netSurplus: r.net, confidence: r.confidence, risk: r.risk, targetUpPct });
   });
   const buyScored = rows

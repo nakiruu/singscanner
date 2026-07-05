@@ -1,5 +1,8 @@
 // Shared scan result types.
 
+import type { HorizonRung } from "./levels";
+import type { ConfidenceFactors } from "./confidence";
+
 export type Decision = "BUY" | "WAIT" | "HOLD-CASH" | "SELL" | "HOLD" | "ROTATE";
 export type Role = "primary" | "secondary" | "retained" | "none";
 
@@ -8,39 +11,67 @@ export interface ScanRow {
   price: number;
   spreadBps: number;
   relVol: number;
+
+  // Signal families (SPECLIST §4)
   momentum: number;
   quality: number;
   liquidity: number;
   risk: number;
   composite: number;
   pUp: number;
+
+  // Uncertainty (§8)
   confidence: number;
-  mu: number;          // bps
+  // Per-cause breakdown so callers can explain WHY confidence is low.
+  confidenceFactors: ConfidenceFactors;
+
+  // Forecast + evidence
+  mu: number;                    // bps
   evidence: number;
+  // Realized annualized vol used for this row (§6 √t scaling). Downstream
+  // overlays should pass THIS, not a fleet-wide guess, into computeStopTarget.
+  volAnn: number;
+
+  // Gate outputs (§59)
   role: Role;
   decision: Decision;
-  modelEdge: number;   // bps
-  cost: number;        // bps
-  net: number;         // bps
-  star: boolean;
-  starScore: number | null; // buy ranking metric (null for non-BUY rows)
-  source: string;      // alpaca | mock | yf
-  exchange?: string;   // NYSE | NASDAQ | etc — set by universe lookup
+  modelEdge: number;             // bps
+  cost: number;                  // bps — total required hurdle
+  net: number;                   // bps — modelEdge − cost − cashWait − concentration
+  // Breakdown of `cost` so callers can render an audit-friendly gate tooltip.
+  cEntry: number;                // bps
+  cExit: number;                 // bps (reserved)
+  cQueue: number;                // bps
+  cMemory: number;               // bps
+  concentrationBps: number;      // bps subtracted from modelEdge (§21)
 
-  // Spec §57: target weight if this row is in the constructed target book.
-  // 0 for non-qualifying rows (cash residual absorbs the rest).
+  // Star ranking
+  star: boolean;
+  starScore: number | null;
+
+  // Portfolio construction (§57)
   targetWeight: number;
-  // Spec §21: concentration penalty in bps charged against modelEdge when
-  // the target weight exceeds the comfortable single-name weight.
-  concentrationBps: number;
+
+  // Multi-horizon fair-value target ladder (§7). Same math as the row's
+  // primary target computation but evaluated at 1d / 3d / 5d / 10d so users
+  // can pick their own hold.
+  horizonLadder: HorizonRung[];
+
+  // Carry / gap warnings (§16). true when the current bar-to-next-session
+  // gap crosses a weekend/holiday, so exit-EV should be discounted.
+  crossesWeekend: boolean;
+  gapDays: number;
+
+  // Provenance
+  source: string;      // alpaca | mock | yf
+  exchange?: string;   // NYSE | NASDAQ | ...
 }
 
 export interface ScanSnapshot {
-  generatedAt: string;       // ISO
-  horizon: string;           // e.g. "3d"
-  universe: string;          // "auto" or list label
+  generatedAt: string;
+  horizon: string;
+  universe: string;
   symbolsScanned: number;
   rows: ScanRow[];
-  // Spec §57: residual cash weight after target portfolio construction.
   cashWeight: number;
 }

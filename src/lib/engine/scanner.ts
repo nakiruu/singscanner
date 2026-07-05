@@ -18,7 +18,12 @@ import { forecast } from "./forecast";
 import { computeConfidence } from "./confidence";
 import { assignRoles } from "./roles";
 import { gateDecision } from "./gate";
-import { computeStopTarget, starScore } from "./levels";
+import {
+  computeStopTarget,
+  computeHorizonLadder,
+  DEFAULT_HORIZON_RUNGS,
+  starScore,
+} from "./levels";
 import { buildTargetPortfolio } from "./portfolio";
 import {
   computeFamilies,
@@ -202,6 +207,7 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
     composite: number;
     pUp: number;
     confidence: number;
+    confidenceFactors: import("./confidence").ConfidenceFactors;
     mu: number;
     evidence: number;
     volAnn: number;
@@ -218,7 +224,7 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       [p.feats.ret_21d, p.feats.ret_63d, p.feats.ret_126d, p.feats.beta_vs_spy,
        p.feats.realized_vol_ann, p.feats.max_drawdown_60d].filter((x) => x == null).length;
 
-    const confidence = computeConfidence({
+    const conf = computeConfidence({
       source: "alpaca",
       quoteAgeSec: p.quoteAgeSec,
       marketOpen: clockState.isOpen,
@@ -234,7 +240,7 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
 
     const f = forecast({
       signals,
-      confidence,
+      confidence: conf.value,
       volAnn,
       edgeHorizonMin: horizonMin,
       calib,
@@ -245,7 +251,8 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       signals,
       composite: f.composite,
       pUp: f.pUp,
-      confidence: Math.min(confidence, 1),
+      confidence: Math.min(conf.value, 1),
+      confidenceFactors: conf.factors,
       mu: f.mu,
       evidence: f.evidence,
       volAnn,
@@ -351,6 +358,20 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       concentrationBps,
     });
 
+    // Multi-horizon fair-value ladder (§7). Same forecast, four horizons.
+    const horizonLadder = computeHorizonLadder({
+      ref: p.price,
+      volAnn: s.volAnn,
+      composite: s.composite,
+      confidence: s.confidence,
+      rungs: DEFAULT_HORIZON_RUNGS,
+    });
+
+    // Weekend / holiday carry warning (§16). gapDays counts trading days to
+    // next session; anything ≥ 3 means the row is exposed across a weekend
+    // or a longer close.
+    const crossesWeekend = p.gapDays >= 3;
+
     return {
       symbol: p.symbol,
       price: p.price,
@@ -363,23 +384,34 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       composite: s.composite,
       pUp: s.pUp,
       confidence: s.confidence,
+      confidenceFactors: s.confidenceFactors,
       mu: s.mu,
       evidence: s.evidence,
+      volAnn: s.volAnn,
       role,
       decision: g.decision,
       modelEdge: g.modelEdge,
       cost: g.required,
       net: g.net,
+      cEntry: g.cEntry,
+      cExit: g.cExit,
+      cQueue: g.cQueue,
+      cMemory: g.cMemory,
+      concentrationBps,
       star: false,
       starScore: null,
       source: "alpaca",
       exchange: p.exchange,
       targetWeight,
-      concentrationBps,
+      horizonLadder,
+      crossesWeekend,
+      gapDays: p.gapDays,
     };
   });
 
-  // Stage 8: starScore for all BUY rows; top 5 starEligible BUYs get star=true.
+  // Stage 8: starScore for all BUY rows using fair-value upside (not the
+  // minRR-inflated legacy target), so top-of-book reflects honest expected
+  // return per SPECLIST §6.
   const holdingDays = Math.max(1, horizonMin / 390);
   out.forEach((r, i) => {
     if (r.decision !== "BUY") return;
@@ -390,9 +422,10 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       composite: r.composite,
       confidence: r.confidence,
       currentPrice: r.price,
+      spreadBps: r.spreadBps,
       calib,
     });
-    const targetUpPct = ((st.target - r.price) / r.price) * 100;
+    const targetUpPct = ((st.fairValueTarget - r.price) / r.price) * 100;
     r.starScore = starScore({ netSurplus: r.net, confidence: r.confidence, risk: r.risk, targetUpPct });
   });
   const scored = out

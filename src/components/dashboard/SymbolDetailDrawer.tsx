@@ -257,11 +257,12 @@ export function SymbolDetailDrawer({
     if (!row) return null;
     return computeStopTarget({
       ref: row.price,
-      volAnn: 0.3,
+      volAnn: row.volAnn > 0 ? row.volAnn : 0.3,
       holdingDays: Math.max(1, horizonMin / 390),
       composite: row.composite,
       confidence: row.confidence,
       currentPrice: row.price,
+      spreadBps: row.spreadBps,
       calib,
     });
   }, [row, horizonMin, calib]);

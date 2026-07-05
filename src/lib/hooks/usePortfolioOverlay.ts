@@ -8,11 +8,14 @@ import { scoreRotations, type RotationHolding, type RotationTarget } from "@/lib
 import type { ScanRow, ScanSnapshot } from "@/lib/engine/types";
 import type { PortfolioEntry, PortfolioOverlayRow } from "@/lib/portfolio/types";
 
-// TODO: per-symbol annualized vol should come from the bars fetcher when it ships.
-const ASSUMED_VOL_ANN = 0.3;
 const DEFAULT_HORIZON = "5d";
 
-// Number of BUY candidates considered as rotation destinations.
+// Fallback vol used only when the row's `volAnn` is missing (should not happen
+// in the live pipeline — scanner emits realized_vol_ann per row).
+const VOL_ANN_FALLBACK = 0.3;
+
+// How many rotation candidates to score per held position. The UI decides how
+// many to render; the engine returns them ranked.
 const ROTATION_SLATE_SIZE = 8;
 
 export function usePortfolioOverlay(
@@ -67,38 +70,51 @@ export function usePortfolioOverlay(
           stop: 0,
           target: 0,
           rr: 0,
+          fairValueTarget: 0,
+          takeProfitLimit: 0,
+          stopLimit: 0,
+          trailingStop: 0,
+          trailingStopLimit: 0,
+          minRRTarget: 0,
+          minRRActive: false,
           decision: "HOLD",
           reason: "No scan data",
+          rotationCandidates: [],
         };
       }
 
-      const { stop, target, rr } = computeStopTarget({
+      const volAnn = scanRow.volAnn > 0 ? scanRow.volAnn : VOL_ANN_FALLBACK;
+
+      const levels = computeStopTarget({
         ref: p.costBasis,
-        volAnn: ASSUMED_VOL_ANN,
+        volAnn,
         holdingDays,
         composite: scanRow.composite,
         confidence: scanRow.confidence,
         currentPrice,
+        spreadBps: scanRow.spreadBps,
         calib,
       });
 
-      // Spec §30: score rotations for this held name against the top BUY slate.
-      // The held row's exit cost is proxied by its scan cost (side-symmetric —
-      // the gate uses the same C_side for entry and exit at 0.65 modeled).
+      // Spec §30: score rotations for this held name. The held row's expected
+      // exit friction is proxied as 0.65·cost (SPECLIST §59 BUY exit scale
+      // used for symmetry with entry cost budgeting).
       const holdingRotationInput: RotationHolding = {
         symbol: p.symbol,
         role: scanRow.role,
         netBps: Math.max(0, scanRow.net),
         modelEdgeBps: scanRow.modelEdge,
-        exitCostBps: scanRow.cost * 0.65, // spec §59 BUY exit modeled scale
+        exitCostBps: scanRow.cost * 0.65,
       };
-      const rotations = scoreRotations(holdingRotationInput, rotationTargets);
-      const bestRotation = rotations.length > 0 ? rotations[0] : null;
+      const rotationCandidates = scoreRotations(holdingRotationInput, rotationTargets, {
+        topN: 3,
+      });
+      const bestRotation = rotationCandidates.length > 0 ? rotationCandidates[0] : null;
 
       const sell = sellDecision({
         price: currentPrice,
-        stop,
-        target,
+        stop: levels.stop,
+        target: levels.target,
         composite: scanRow.composite,
         isMember: scanRow.role === "primary" || scanRow.role === "secondary",
         isRetained: scanRow.role === "retained",
@@ -116,13 +132,23 @@ export function usePortfolioOverlay(
         scanRow,
         pnlDollars,
         pnlPercent,
-        stop,
-        target,
-        rr,
+        // Legacy
+        stop: levels.stop,
+        target: levels.target,
+        rr: levels.rr,
+        // Spec-aligned split
+        fairValueTarget: levels.fairValueTarget,
+        takeProfitLimit: levels.takeProfitLimit,
+        stopLimit: levels.stopLimit,
+        trailingStop: levels.trailingStop,
+        trailingStopLimit: levels.trailingStopLimit,
+        minRRTarget: levels.minRRTarget,
+        minRRActive: levels.minRRActive,
         decision: sell.decision,
         reason: sell.reason,
         rotateTo: sell.rotateTo,
         bestRotationBps: bestRotation?.cleared ? bestRotation.netAdvantageBps : 0,
+        rotationCandidates,
       };
     });
   }, [snapshot, positions]);
