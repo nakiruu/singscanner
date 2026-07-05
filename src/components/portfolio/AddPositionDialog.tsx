@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AddPositionInput } from "@/lib/portfolio/types";
@@ -11,27 +11,42 @@ export interface AddPositionDialogProps {
   open: boolean;
   onClose: () => void;
   onSubmit: (input: AddPositionInput) => Promise<void>;
+  // Optional prefills — used when the dialog is opened from a decision badge
+  // in the actionable dashboard so the user doesn't retype what's already
+  // on the screen.
+  initialSymbol?: string;
+  initialQty?: number | null;
+  initialCostBasis?: number | null;
+  initialNotes?: string | null;
 }
 
-export function AddPositionDialog({ open, onClose, onSubmit }: AddPositionDialogProps) {
-  const [symbol, setSymbol] = useState("");
-  const [qty, setQty] = useState("");
-  const [costBasis, setCostBasis] = useState("");
-  const [notes, setNotes] = useState("");
+export function AddPositionDialog({
+  open,
+  onClose,
+  onSubmit,
+  initialSymbol,
+  initialQty,
+  initialCostBasis,
+  initialNotes,
+}: AddPositionDialogProps) {
+  // useState initializers seed from props at MOUNT time. Callers should
+  // conditionally render the dialog (e.g. `{open && <AddPositionDialog … />}`)
+  // so opening for a new symbol remounts the component and the initializers
+  // rerun with the fresh prefills.
+  const [symbol, setSymbol] = useState(() => (initialSymbol ?? "").toUpperCase());
+  const [qty, setQty] = useState(() =>
+    initialQty != null && initialQty > 0 ? String(initialQty) : "",
+  );
+  const [costBasis, setCostBasis] = useState(() =>
+    initialCostBasis != null && initialCostBasis > 0
+      ? initialCostBasis.toFixed(2)
+      : "",
+  );
+  const [notes, setNotes] = useState(() => initialNotes ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!open) {
-      setSymbol("");
-      setQty("");
-      setCostBasis("");
-      setNotes("");
-      setSubmitting(false);
-      setError(null);
-    }
-  }, [open]);
-
+  // Defensive: if a caller renders us unconditionally, still respect `open`.
   if (!open) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {

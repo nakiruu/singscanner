@@ -9,11 +9,14 @@
 //   2. Fresh BUY picks from the scan, filtered to starred or primary-role
 //      candidates so the noise floor of WAIT/HOLD-CASH rows never appears.
 //
-// The scanner never auto-executes. Every row here is a suggestion.
+// The scanner never auto-executes. Every decision badge opens the add-position
+// dialog prefilled with the row's context.
 
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, Circle, Loader2, Sparkles } from "lucide-react";
+import { ArrowRight, ChevronDown, Circle, Loader2, Sparkles } from "lucide-react";
 import { DecisionBadge } from "@/components/dashboard/DecisionBadge";
+import { MQLRBars } from "@/components/dashboard/MQLRBars";
+import { AddPositionDialog } from "@/components/portfolio/AddPositionDialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { usePortfolio } from "@/lib/hooks/usePortfolio";
@@ -36,24 +39,37 @@ const URGENCY: Record<PortfolioOverlayRow["decision"], number> = {
 function sortByUrgency(a: PortfolioOverlayRow, b: PortfolioOverlayRow): number {
   const du = (URGENCY[a.decision] ?? 99) - (URGENCY[b.decision] ?? 99);
   if (du !== 0) return du;
-  // Within same decision, biggest EV first.
   const av = Math.abs(a.scanRow?.net ?? 0);
   const bv = Math.abs(b.scanRow?.net ?? 0);
   return bv - av;
 }
 
 // A row is worth surfacing as a BUY candidate if the model actually WANTS the
-// user to move on it — the star flag OR a primary role role clearing the gate.
+// user to move on it — the star flag OR a primary role clearing the gate.
 function isActionableBuy(row: ScanRow): boolean {
   return row.decision === "BUY" && (row.star || row.role === "primary");
 }
+
+// -- Dialog prefill wrapper ---------------------------------------------------
+
+interface DialogState {
+  open: boolean;
+  symbol: string;
+  qty: number | null;
+  costBasis: number | null;
+}
+
+const CLOSED_DIALOG: DialogState = { open: false, symbol: "", qty: null, costBasis: null };
 
 // -- Component ----------------------------------------------------------------
 
 export function ActionableDashboard() {
   const { snapshot, status, lastUpdate } = useScanStream();
-  const { positions, loading: portfolioLoading } = usePortfolio();
+  const { positions, loading: portfolioLoading, addPosition } = usePortfolio();
   const overlay = usePortfolioOverlay(snapshot, positions);
+
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<DialogState>(CLOSED_DIALOG);
 
   const sortedHoldings = useMemo(
     () => [...overlay].sort(sortByUrgency),
@@ -64,30 +80,62 @@ export function ActionableDashboard() {
     const rows = snapshot?.rows ?? [];
     return rows
       .filter(isActionableBuy)
-      // Held names already appear in the top section — no duplicates.
       .filter((r) => !overlay.some((h) => h.symbol === r.symbol))
       .sort((a, b) => (b.starScore ?? b.net) - (a.starScore ?? a.net));
   }, [snapshot, overlay]);
 
-  const heldCount = sortedHoldings.length;
-  const buyCount = buyPicks.length;
+  const toggleExpand = (symbol: string) =>
+    setExpanded((prev) => (prev === symbol ? null : symbol));
+
+  // Open the dialog with a preferred prefill. For BUY picks we suggest the
+  // current price as cost basis; for held positions we pre-fill the existing
+  // qty + cost basis so the POST upserts an "adjust" rather than a fresh add.
+  const openDialogForBuy = (row: ScanRow) =>
+    setDialog({ open: true, symbol: row.symbol, qty: null, costBasis: row.price });
+  const openDialogForHeld = (row: PortfolioOverlayRow) =>
+    setDialog({
+      open: true,
+      symbol: row.symbol,
+      qty: row.qty,
+      costBasis: row.costBasis,
+    });
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-6">
       <HeaderBar
         status={status}
         lastUpdate={lastUpdate}
-        heldCount={heldCount}
-        buyCount={buyCount}
+        heldCount={sortedHoldings.length}
+        buyCount={buyPicks.length}
         cashWeight={snapshot?.cashWeight ?? null}
       />
 
       <PortfolioSection
         rows={sortedHoldings}
         loading={portfolioLoading}
+        expandedSymbol={expanded}
+        onToggle={toggleExpand}
+        onDecisionClick={openDialogForHeld}
       />
 
-      <BuyPicksSection rows={buyPicks} snapshot={snapshot} />
+      <BuyPicksSection
+        rows={buyPicks}
+        snapshot={snapshot}
+        expandedSymbol={expanded}
+        onToggle={toggleExpand}
+        onDecisionClick={openDialogForBuy}
+      />
+
+      {dialog.open && (
+        <AddPositionDialog
+          open
+          onClose={() => setDialog(CLOSED_DIALOG)}
+          onSubmit={addPosition}
+          initialSymbol={dialog.symbol}
+          initialQty={dialog.qty}
+          initialCostBasis={dialog.costBasis}
+        />
+      )}
     </div>
   );
 }
@@ -115,8 +163,6 @@ function HeaderBar({ status, lastUpdate, heldCount, buyCount, cashWeight }: Head
   : status === "error"      ? "bg-error"
                             : "bg-terminal-gray";
 
-  // Age tick — driven by a 1s interval so we can compute "updated Xs ago"
-  // without calling Date.now() during render (React purity rule).
   const [now, setNow] = useState<number | null>(null);
   useEffect(() => {
     if (lastUpdate == null) return;
@@ -165,9 +211,15 @@ function Stat({ label, value }: { label: string; value: string }) {
 function PortfolioSection({
   rows,
   loading,
+  expandedSymbol,
+  onToggle,
+  onDecisionClick,
 }: {
   rows: PortfolioOverlayRow[];
   loading: boolean;
+  expandedSymbol: string | null;
+  onToggle: (symbol: string) => void;
+  onDecisionClick: (row: PortfolioOverlayRow) => void;
 }) {
   return (
     <Card>
@@ -188,7 +240,13 @@ function PortfolioSection({
         ) : (
           <ul className="divide-y divide-border">
             {rows.map((r) => (
-              <PortfolioRow key={r.symbol} row={r} />
+              <PortfolioRow
+                key={r.symbol}
+                row={r}
+                isExpanded={expandedSymbol === r.symbol}
+                onToggle={() => onToggle(r.symbol)}
+                onDecisionClick={() => onDecisionClick(r)}
+              />
             ))}
           </ul>
         )}
@@ -197,61 +255,98 @@ function PortfolioSection({
   );
 }
 
-function PortfolioRow({ row }: { row: PortfolioOverlayRow }) {
+function PortfolioRow({
+  row,
+  isExpanded,
+  onToggle,
+  onDecisionClick,
+}: {
+  row: PortfolioOverlayRow;
+  isExpanded: boolean;
+  onToggle: () => void;
+  onDecisionClick: () => void;
+}) {
   const { symbol, qty, currentPrice, pnlPercent, pnlDollars, decision, reason } = row;
 
   return (
-    <li className="grid grid-cols-12 items-center gap-3 px-5 py-3 text-sm">
-      {/* Symbol + qty */}
-      <div className="col-span-3 flex items-center gap-3">
-        <div className="flex flex-col">
-          <span className="font-mono text-[13px] font-semibold text-on-surface">{symbol}</span>
-          <span className="font-mono text-[11px] text-on-surface-variant">
-            {qty.toLocaleString()} sh
+    <li>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={isExpanded}
+        aria-controls={`row-detail-${symbol}`}
+        className={cn(
+          "grid w-full grid-cols-12 items-center gap-3 px-5 py-3 text-left text-sm transition-colors",
+          "hover:bg-surface-default focus:outline-none focus-visible:bg-surface-default",
+        )}
+      >
+        {/* Symbol + qty */}
+        <div className="col-span-3 flex items-center gap-3">
+          <ChevronDown
+            className={cn(
+              "h-3.5 w-3.5 shrink-0 text-on-surface-variant transition-transform",
+              isExpanded && "rotate-180",
+            )}
+          />
+          <div className="flex flex-col">
+            <span className="font-mono text-[13px] font-semibold text-on-surface">
+              {symbol}
+            </span>
+            <span className="font-mono text-[11px] text-on-surface-variant">
+              {qty.toLocaleString()} sh
+            </span>
+          </div>
+        </div>
+
+        {/* Price + P/L */}
+        <div className="col-span-3 flex flex-col text-right font-mono tabular-nums">
+          <span className="text-on-surface">
+            {currentPrice != null ? `$${currentPrice.toFixed(2)}` : "—"}
+          </span>
+          <span
+            className={cn(
+              "text-[11px]",
+              pnlDollars > 0
+                ? "text-success"
+                : pnlDollars < 0
+                  ? "text-error"
+                  : "text-on-surface-variant",
+            )}
+          >
+            {pnlDollars >= 0 ? "+" : ""}
+            {pnlDollars.toFixed(0)} · {(pnlPercent * 100).toFixed(1)}%
           </span>
         </div>
-      </div>
 
-      {/* Price + P/L */}
-      <div className="col-span-3 flex flex-col text-right font-mono tabular-nums">
-        <span className="text-on-surface">
-          {currentPrice != null ? `$${currentPrice.toFixed(2)}` : "—"}
-        </span>
-        <span
-          className={cn(
-            "text-[11px]",
-            pnlDollars > 0 ? "text-success" : pnlDollars < 0 ? "text-error" : "text-on-surface-variant",
-          )}
-        >
-          {pnlDollars >= 0 ? "+" : ""}
-          {pnlDollars.toFixed(0)} · {(pnlPercent * 100).toFixed(1)}%
-        </span>
-      </div>
+        {/* Levels */}
+        <div className="col-span-3 flex flex-col text-right font-mono tabular-nums text-[11px] text-on-surface-variant">
+          <span>
+            TP {row.takeProfitLimit > 0 ? `$${row.takeProfitLimit.toFixed(2)}` : "—"}
+          </span>
+          <span>
+            SL {row.trailingStopLimit > 0 ? `$${row.trailingStopLimit.toFixed(2)}` : "—"}
+          </span>
+        </div>
 
-      {/* Levels */}
-      <div className="col-span-3 flex flex-col text-right font-mono tabular-nums text-[11px] text-on-surface-variant">
-        <span>
-          TP {row.takeProfitLimit > 0 ? `$${row.takeProfitLimit.toFixed(2)}` : "—"}
-        </span>
-        <span>
-          SL {row.trailingStopLimit > 0 ? `$${row.trailingStopLimit.toFixed(2)}` : "—"}
-        </span>
-      </div>
+        {/* Decision button */}
+        <div className="col-span-3 flex flex-col items-end gap-1">
+          <DecisionButton decision={decision} onClick={onDecisionClick} />
+          <span className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+            {decision === "ROTATE" && row.rotateTo ? (
+              <span className="inline-flex items-center gap-1">
+                → {row.rotateTo}
+                <ArrowRight className="h-3 w-3" />
+              </span>
+            ) : (
+              reason
+            )}
+          </span>
+        </div>
+      </button>
 
-      {/* Decision + reason */}
-      <div className="col-span-3 flex flex-col items-end gap-1">
-        <DecisionBadge decision={decision} />
-        <span className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
-          {decision === "ROTATE" && row.rotateTo ? (
-            <span className="inline-flex items-center gap-1">
-              → {row.rotateTo}
-              <ArrowRight className="h-3 w-3" />
-            </span>
-          ) : (
-            reason
-          )}
-        </span>
-      </div>
+      {isExpanded && row.scanRow && (
+        <RowDetails id={`row-detail-${symbol}`} row={row.scanRow} />
+      )}
     </li>
   );
 }
@@ -261,9 +356,15 @@ function PortfolioRow({ row }: { row: PortfolioOverlayRow }) {
 function BuyPicksSection({
   rows,
   snapshot,
+  expandedSymbol,
+  onToggle,
+  onDecisionClick,
 }: {
   rows: ScanRow[];
   snapshot: ScanSnapshot | null;
+  expandedSymbol: string | null;
+  onToggle: (symbol: string) => void;
+  onDecisionClick: (row: ScanRow) => void;
 }) {
   const horizon = snapshot?.horizon ?? "5d";
   return (
@@ -286,7 +387,13 @@ function BuyPicksSection({
         ) : (
           <ul className="divide-y divide-border">
             {rows.map((r) => (
-              <BuyPickRow key={r.symbol} row={r} />
+              <BuyPickRow
+                key={r.symbol}
+                row={r}
+                isExpanded={expandedSymbol === r.symbol}
+                onToggle={() => onToggle(r.symbol)}
+                onDecisionClick={() => onDecisionClick(r)}
+              />
             ))}
           </ul>
         )}
@@ -295,67 +402,286 @@ function BuyPicksSection({
   );
 }
 
-function BuyPickRow({ row }: { row: ScanRow }) {
-  // Show the 5d rung target if present; fall back to composite-implied.
+function BuyPickRow({
+  row,
+  isExpanded,
+  onToggle,
+  onDecisionClick,
+}: {
+  row: ScanRow;
+  isExpanded: boolean;
+  onToggle: () => void;
+  onDecisionClick: () => void;
+}) {
   const rung = row.horizonLadder.find((r) => r.horizonSpec === "5d") ?? row.horizonLadder[0];
   const targetPx = rung?.fairValueTarget ?? row.price;
   const upsidePct = ((targetPx - row.price) / row.price) * 100;
 
   return (
-    <li className="grid grid-cols-12 items-center gap-3 px-5 py-3 text-sm">
-      {/* Symbol + star */}
-      <div className="col-span-3 flex items-center gap-2">
-        {row.star ? (
-          <Sparkles className="h-3.5 w-3.5 text-primary" />
-        ) : (
-          <Circle className="h-3.5 w-3.5 text-on-surface-variant" />
+    <li>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={isExpanded}
+        aria-controls={`row-detail-${row.symbol}`}
+        className={cn(
+          "grid w-full grid-cols-12 items-center gap-3 px-5 py-3 text-left text-sm transition-colors",
+          "hover:bg-surface-default focus:outline-none focus-visible:bg-surface-default",
         )}
-        <span className="font-mono text-[13px] font-semibold text-on-surface">
-          {row.symbol}
-        </span>
-        <span className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
-          {row.role}
-        </span>
-      </div>
-
-      {/* Price + upside */}
-      <div className="col-span-3 flex flex-col text-right font-mono tabular-nums">
-        <span className="text-on-surface">${row.price.toFixed(2)}</span>
-        <span className="text-[11px] text-success">
-          → ${targetPx.toFixed(2)}{" "}
-          <span className="text-on-surface-variant">
-            (+{upsidePct.toFixed(1)}%)
-          </span>
-        </span>
-      </div>
-
-      {/* Gate net / composite */}
-      <div className="col-span-3 flex flex-col text-right font-mono tabular-nums text-[11px]">
-        <span
-          className={cn(
-            row.net > 0 ? "text-success" : "text-on-surface-variant",
+      >
+        {/* Symbol + star */}
+        <div className="col-span-3 flex items-center gap-2">
+          <ChevronDown
+            className={cn(
+              "h-3.5 w-3.5 shrink-0 text-on-surface-variant transition-transform",
+              isExpanded && "rotate-180",
+            )}
+          />
+          {row.star ? (
+            <Sparkles className="h-3.5 w-3.5 text-primary" />
+          ) : (
+            <Circle className="h-3.5 w-3.5 text-on-surface-variant" />
           )}
-        >
-          net {row.net >= 0 ? "+" : ""}
-          {row.net.toFixed(0)} bps
-        </span>
-        <span className="text-on-surface-variant">
-          conf {Math.round(row.confidence * 100)}%
-        </span>
-      </div>
+          <span className="font-mono text-[13px] font-semibold text-on-surface">
+            {row.symbol}
+          </span>
+          <span className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+            {row.role}
+          </span>
+        </div>
 
-      {/* Decision */}
-      <div className="col-span-3 flex items-center justify-end">
-        <DecisionBadge decision={row.decision} />
-      </div>
+        {/* Price + upside */}
+        <div className="col-span-3 flex flex-col text-right font-mono tabular-nums">
+          <span className="text-on-surface">${row.price.toFixed(2)}</span>
+          <span className="text-[11px] text-success">
+            → ${targetPx.toFixed(2)}{" "}
+            <span className="text-on-surface-variant">(+{upsidePct.toFixed(1)}%)</span>
+          </span>
+        </div>
+
+        {/* Gate net / confidence */}
+        <div className="col-span-3 flex flex-col text-right font-mono tabular-nums text-[11px]">
+          <span
+            className={cn(row.net > 0 ? "text-success" : "text-on-surface-variant")}
+          >
+            net {row.net >= 0 ? "+" : ""}
+            {row.net.toFixed(0)} bps
+          </span>
+          <span className="text-on-surface-variant">
+            conf {Math.round(row.confidence * 100)}%
+          </span>
+        </div>
+
+        {/* Decision button */}
+        <div className="col-span-3 flex items-center justify-end">
+          <DecisionButton decision={row.decision} onClick={onDecisionClick} />
+        </div>
+      </button>
+
+      {isExpanded && (
+        <RowDetails id={`row-detail-${row.symbol}`} row={row} />
+      )}
     </li>
   );
 }
 
+// -- Shared: clickable decision badge ----------------------------------------
+
+function DecisionButton({
+  decision,
+  onClick,
+}: {
+  decision: PortfolioOverlayRow["decision"];
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        // Stop the surrounding row toggle from firing.
+        e.stopPropagation();
+        onClick();
+      }}
+      aria-label={`${decision} — open add position dialog`}
+      className="rounded-sm outline-none transition hover:brightness-110 focus-visible:ring-2 focus-visible:ring-primary"
+    >
+      <DecisionBadge decision={decision} />
+    </button>
+  );
+}
+
+// -- Expansion panel: score detail per row -----------------------------------
+
+function RowDetails({ id, row }: { id: string; row: ScanRow }) {
+  return (
+    <div
+      id={id}
+      className="border-t border-border bg-surface-lowest px-5 py-4"
+    >
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        {/* Signal families */}
+        <DetailBlock title="Signal families">
+          <div className="mb-3 flex items-center gap-2">
+            <MQLRBars M={row.momentum} Q={row.quality} L={row.liquidity} R={row.risk} size="md" />
+            <span className="font-mono text-[11px] text-on-surface-variant">
+              composite {Math.round(row.composite)}
+            </span>
+          </div>
+          <DetailRow label="Momentum"  value={row.momentum.toFixed(0)} />
+          <DetailRow label="Quality"   value={row.quality.toFixed(0)} />
+          <DetailRow label="Liquidity" value={row.liquidity.toFixed(0)} />
+          <DetailRow label="Risk"      value={row.risk.toFixed(0)} />
+        </DetailBlock>
+
+        {/* Forecast + confidence */}
+        <DetailBlock title="Forecast">
+          <DetailRow label="P(up)"      value={`${(row.pUp * 100).toFixed(1)}%`} />
+          <DetailRow label="μ (bps)"    value={fmtBps(row.mu)} />
+          <DetailRow label="Evidence"   value={row.evidence.toFixed(1)} />
+          <DetailRow label="Vol (ann)"  value={`${(row.volAnn * 100).toFixed(1)}%`} />
+          <DetailRow label="Confidence" value={`${Math.round(row.confidence * 100)}%`} />
+          <ConfidenceFactorList factors={row.confidenceFactors} />
+        </DetailBlock>
+
+        {/* Gate breakdown */}
+        <DetailBlock title="Gate (§59)">
+          <DetailRow label="Model edge"     value={fmtBps(row.modelEdge)} tone="pos" />
+          <DetailRow label="− Entry"        value={fmtBps(row.cEntry)}    tone="neg" />
+          <DetailRow label="− Exit"         value={fmtBps(row.cExit)}     tone="neg" />
+          <DetailRow label="− Queue"        value={fmtBps(row.cQueue)}    tone="neg" />
+          {row.cMemory > 0 && (
+            <DetailRow label="− Memory" value={fmtBps(row.cMemory)} tone="neg" />
+          )}
+          {row.concentrationBps > 0 && (
+            <DetailRow
+              label="− Concentration"
+              value={fmtBps(row.concentrationBps)}
+              tone="neg"
+            />
+          )}
+          <DetailRow
+            label="Net"
+            value={fmtBps(row.net)}
+            tone={row.net > 0 ? "pos" : "neg"}
+            strong
+          />
+        </DetailBlock>
+      </div>
+
+      {/* Horizon ladder + warnings */}
+      <div className="mt-4 space-y-2 border-t border-border pt-3">
+        <div className="flex items-baseline gap-3">
+          <span className="label-caps">Fair-value target ladder</span>
+          {row.crossesWeekend && (
+            <span className="font-mono text-[10px] uppercase tracking-wider text-tertiary">
+              ⚠ crosses weekend/holiday · gap {row.gapDays}d
+            </span>
+          )}
+        </div>
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+          {row.horizonLadder.map((r) => {
+            const upPct = ((r.fairValueTarget - row.price) / row.price) * 100;
+            return (
+              <div
+                key={r.horizonSpec}
+                className="rounded border border-border bg-surface-low px-3 py-2"
+              >
+                <div className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+                  {r.horizonSpec}
+                </div>
+                <div className="mt-0.5 font-mono text-sm tabular-nums text-on-surface">
+                  ${r.fairValueTarget.toFixed(2)}
+                </div>
+                <div className="font-mono text-[11px] tabular-nums text-success">
+                  +{upPct.toFixed(1)}%
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DetailBlock({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded border border-border bg-surface-low p-3">
+      <div className="mb-2 label-caps">{title}</div>
+      <div className="space-y-1">{children}</div>
+    </div>
+  );
+}
+
+function DetailRow({
+  label,
+  value,
+  tone,
+  strong,
+}: {
+  label: string;
+  value: string;
+  tone?: "pos" | "neg";
+  strong?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 font-mono text-[11px] tabular-nums">
+      <span className="text-on-surface-variant">{label}</span>
+      <span
+        className={cn(
+          strong && "font-semibold",
+          tone === "pos" && "text-success",
+          tone === "neg" && "text-error",
+          !tone && "text-on-surface",
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+// Confidence factor list — highlights every factor pulling the multiplier
+// below 1. Spec §8: uncertainty is a cost; users see WHY confidence dropped.
+function ConfidenceFactorList({
+  factors,
+}: {
+  factors: ScanRow["confidenceFactors"];
+}) {
+  const entries: Array<[string, number]> = [
+    ["source", factors.source],
+    ["quote age", factors.staleQuote],
+    ["fundamentals", factors.missingFundamentals],
+    ["spread", factors.wideSpread],
+    ["missing fields", factors.missingFields],
+    ["family disagreement", factors.familyDisagreement],
+  ];
+  const active = entries.filter(([, v]) => v < 0.999);
+  if (active.length === 0) return null;
+  return (
+    <div className="mt-1 space-y-0.5 border-t border-border pt-1">
+      <div className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
+        Haircuts
+      </div>
+      {active.map(([label, v]) => (
+        <div
+          key={label}
+          className="flex justify-between font-mono text-[11px] tabular-nums text-on-surface-variant"
+        >
+          <span>{label}</span>
+          <span className="text-error">×{v.toFixed(2)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function fmtBps(v: number): string {
+  return `${v >= 0 ? "+" : ""}${v.toFixed(1)} bps`;
+}
+
 function EmptyRow({ msg }: { msg: string }) {
   return (
-    <div className="px-5 py-6 font-mono text-xs text-on-surface-variant">
-      {msg}
-    </div>
+    <div className="px-5 py-6 font-mono text-xs text-on-surface-variant">{msg}</div>
   );
 }

@@ -251,11 +251,13 @@ export default function PortfolioPage() {
         </CardContent>
       </Card>
 
-      <AddPositionDialog
-        open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
-        onSubmit={addPosition}
-      />
+      {dialogOpen && (
+        <AddPositionDialog
+          open
+          onClose={() => setDialogOpen(false)}
+          onSubmit={addPosition}
+        />
+      )}
     </div>
   );
 }
