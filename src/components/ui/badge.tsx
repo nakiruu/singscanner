@@ -9,8 +9,10 @@ const badgeVariants = cva(
       tone: {
         primary: "border-primary/40 bg-primary/10 text-primary",
         neutral: "border-border bg-surface-low text-on-surface-variant",
-        warn: "border-tertiary/40 bg-tertiary/10 text-tertiary",
-        error: "border-error/40 bg-error/10 text-error",
+        warn:    "border-tertiary/40 bg-tertiary/10 text-tertiary",
+        error:   "border-error/40 bg-error/10 text-error",
+        success: "border-success/40 bg-success/10 text-success",
+        info:    "border-primary/30 bg-primary/5 text-primary/90",
       },
     },
     defaultVariants: { tone: "neutral" },

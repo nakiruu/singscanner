@@ -39,16 +39,20 @@ export function exchangeFor(symbol: string): string {
   return NYSE.has(symbol) ? "NYSE" : "NAS";
 }
 
-export type DecisionTone = "primary" | "warn" | "error" | "neutral" | "info";
+export type DecisionTone = "primary" | "warn" | "error" | "neutral" | "info" | "success";
 
+// SPECLIST §29/§30: SELL and ROTATE are actionable state changes; BUY too.
+// HOLD is informational. WAIT/HOLD-CASH are neutral non-actions.
 export function decisionTone(d: Decision): DecisionTone {
   switch (d) {
     case "BUY":
+      return "success";
+    case "SELL":
+      return "error";
+    case "ROTATE":
       return "primary";
     case "WAIT":
       return "warn";
-    case "SELL":
-      return "error";
     case "HOLD":
     case "HOLD-CASH":
     default:
