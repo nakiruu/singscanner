@@ -21,9 +21,15 @@ const ROTATION_SLATE_SIZE = 8;
 export function usePortfolioOverlay(
   snapshot: ScanSnapshot | null,
   positions: PortfolioEntry[],
+  horizonOverride?: string,
 ): PortfolioOverlayRow[] {
   return useMemo(() => {
-    const horizonSpec = process.env.NEXT_PUBLIC_SCANNER_HORIZON ?? DEFAULT_HORIZON;
+    // Prefer explicit override → snapshot's own horizon → env → default.
+    const horizonSpec =
+      horizonOverride ??
+      snapshot?.horizon ??
+      process.env.NEXT_PUBLIC_SCANNER_HORIZON ??
+      DEFAULT_HORIZON;
     const horizonMin = parseHorizon(horizonSpec);
     const calib = calibrate(horizonMin);
     const holdingDays = Math.max(1, horizonMin / 390);
@@ -151,5 +157,5 @@ export function usePortfolioOverlay(
         rotationCandidates,
       };
     });
-  }, [snapshot, positions]);
+  }, [snapshot, positions, horizonOverride]);
 }

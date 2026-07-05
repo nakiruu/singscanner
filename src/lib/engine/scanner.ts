@@ -13,7 +13,7 @@
 //   marketOpen + session phase come from the real Alpaca clock.
 //   No ML booster / no XGBoost per SPECLIST §68 (validated non-ML surface).
 
-import { parseHorizon, calibrate } from "./horizon";
+import { parseHorizon, calibrate, isHorizonPreset } from "./horizon";
 import { forecast } from "./forecast";
 import { computeConfidence } from "./confidence";
 import { assignRoles } from "./roles";
@@ -54,7 +54,15 @@ interface Cache {
   inflight: Promise<ScanSnapshot> | null;
 }
 
-const cache: Cache = { snapshot: null, ts: 0, inflight: null };
+// Per-horizon cache — one entry per preset. The dashboard exposes 3d/5d/10d/21d
+// selectors so users can compare horizons without stomping each other's data.
+const caches = new Map<string, Cache>();
+
+function defaultHorizon(): string {
+  const env = process.env.SCANNER_HORIZON;
+  if (env && isHorizonPreset(env)) return env;
+  return "5d";
+}
 
 function useAlpaca(): boolean {
   return process.env.SCANNER_MOCK !== "true" && !!process.env.ALPACA_API_KEY;
@@ -455,36 +463,48 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
 void ([] as ClockState[]);
 void ([] as UniverseEntry[]);
 
-async function refresh(): Promise<ScanSnapshot> {
-  const horizon = process.env.SCANNER_HORIZON ?? "5d";
-
+async function refresh(horizon: string): Promise<ScanSnapshot> {
   if (!useAlpaca()) return buildMockSnapshot(horizon);
-
   try {
     return await buildLiveSnapshot(horizon);
   } catch (err) {
-    console.warn("[scanner] live pipeline failed, falling back to mock:", err);
+    console.warn(`[scanner] live pipeline failed for ${horizon}, falling back to mock:`, err);
     return buildMockSnapshot(horizon);
   }
 }
 
-export async function getLatestSnapshot(): Promise<ScanSnapshot> {
+// Resolve the requested horizon into something safe. Unknown specs fall back
+// to the default so a bogus ?h= param can't spawn arbitrary cache entries.
+function resolveHorizon(horizonSpec?: string): string {
+  if (horizonSpec && isHorizonPreset(horizonSpec)) return horizonSpec;
+  return defaultHorizon();
+}
+
+export async function getLatestSnapshot(horizonSpec?: string): Promise<ScanSnapshot> {
+  const horizon = resolveHorizon(horizonSpec);
+  let cache = caches.get(horizon);
+  if (!cache) {
+    cache = { snapshot: null, ts: 0, inflight: null };
+    caches.set(horizon, cache);
+  }
+
   const fresh = Date.now() - cache.ts < REFRESH_MS;
   if (cache.snapshot && fresh) return cache.snapshot;
   if (cache.inflight) return cache.inflight;
 
-  cache.inflight = refresh().then((snap) => {
-    cache.snapshot = snap;
-    cache.ts = Date.now();
-    cache.inflight = null;
+  const entry = cache;
+  entry.inflight = refresh(horizon).then((snap) => {
+    entry.snapshot = snap;
+    entry.ts = Date.now();
+    entry.inflight = null;
     return snap;
   }).catch((err) => {
-    cache.inflight = null;
+    entry.inflight = null;
     throw err;
   });
-  return cache.inflight;
+  return entry.inflight;
 }
 
-export function getCachedSnapshot(): ScanSnapshot | null {
-  return cache.snapshot;
+export function getCachedSnapshot(horizonSpec?: string): ScanSnapshot | null {
+  return caches.get(resolveHorizon(horizonSpec))?.snapshot ?? null;
 }

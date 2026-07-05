@@ -22,8 +22,13 @@ import { cn } from "@/lib/utils";
 import { usePortfolio } from "@/lib/hooks/usePortfolio";
 import { usePortfolioOverlay } from "@/lib/hooks/usePortfolioOverlay";
 import { useScanStream, type ScanStreamStatus } from "@/lib/hooks/useScanStream";
+import { HORIZON_PRESETS, type HorizonPreset } from "@/lib/engine/horizon";
 import type { ScanRow, ScanSnapshot } from "@/lib/engine/types";
 import type { PortfolioOverlayRow } from "@/lib/portfolio/types";
+
+// Which horizon preset the dashboard starts on. 5d matches the SPECLIST
+// default and the server-side SCANNER_HORIZON env fallback.
+const DEFAULT_HORIZON: HorizonPreset = "5d";
 
 // -- Decision urgency ordering ------------------------------------------------
 
@@ -64,12 +69,19 @@ const CLOSED_DIALOG: DialogState = { open: false, symbol: "", qty: null, costBas
 // -- Component ----------------------------------------------------------------
 
 export function ActionableDashboard() {
-  const { snapshot, status, lastUpdate } = useScanStream();
+  const [horizon, setHorizon] = useState<HorizonPreset>(DEFAULT_HORIZON);
+  const { snapshot, status, lastUpdate } = useScanStream(horizon);
   const { positions, loading: portfolioLoading, addPosition } = usePortfolio();
-  const overlay = usePortfolioOverlay(snapshot, positions);
+  const overlay = usePortfolioOverlay(snapshot, positions, horizon);
 
   const [expanded, setExpanded] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogState>(CLOSED_DIALOG);
+
+  // Collapse any expanded row when horizon flips so the detail panel doesn't
+  // linger with stale data before the next snapshot arrives.
+  useEffect(() => {
+    setExpanded(null);
+  }, [horizon]);
 
   const sortedHoldings = useMemo(
     () => [...overlay].sort(sortByUrgency),
@@ -108,6 +120,8 @@ export function ActionableDashboard() {
         heldCount={sortedHoldings.length}
         buyCount={buyPicks.length}
         cashWeight={snapshot?.cashWeight ?? null}
+        horizon={horizon}
+        onHorizonChange={setHorizon}
       />
 
       <PortfolioSection
@@ -148,9 +162,19 @@ interface HeaderBarProps {
   heldCount: number;
   buyCount: number;
   cashWeight: number | null;
+  horizon: HorizonPreset;
+  onHorizonChange: (h: HorizonPreset) => void;
 }
 
-function HeaderBar({ status, lastUpdate, heldCount, buyCount, cashWeight }: HeaderBarProps) {
+function HeaderBar({
+  status,
+  lastUpdate,
+  heldCount,
+  buyCount,
+  cashWeight,
+  horizon,
+  onHorizonChange,
+}: HeaderBarProps) {
   const label =
     status === "live"       ? "Live"
   : status === "polling"    ? "Polling"
@@ -186,13 +210,55 @@ function HeaderBar({ status, lastUpdate, heldCount, buyCount, cashWeight }: Head
           </span>
         )}
       </div>
-      <div className="flex items-center gap-5 font-mono text-xs">
-        <Stat label="Holdings" value={heldCount.toString()} />
-        <Stat label="BUY picks" value={buyCount.toString()} />
-        {cashWeight != null && (
-          <Stat label="Cash" value={`${Math.round(cashWeight * 100)}%`} />
-        )}
+      <div className="flex items-center gap-5">
+        <HorizonSelector value={horizon} onChange={onHorizonChange} />
+        <div className="flex items-center gap-5 font-mono text-xs">
+          <Stat label="Holdings" value={heldCount.toString()} />
+          <Stat label="BUY picks" value={buyCount.toString()} />
+          {cashWeight != null && (
+            <Stat label="Cash" value={`${Math.round(cashWeight * 100)}%`} />
+          )}
+        </div>
       </div>
+    </div>
+  );
+}
+
+// Four-preset segmented control. Ordered short → long: 3d, 5d, 10d, 21d.
+// Clicking a preset re-runs the scan against the selected horizon and clears
+// stale state — see useEffect + useScanStream in the parent.
+function HorizonSelector({
+  value,
+  onChange,
+}: {
+  value: HorizonPreset;
+  onChange: (h: HorizonPreset) => void;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Horizon"
+      className="inline-flex items-center rounded-md border border-border bg-surface-lowest p-0.5"
+    >
+      {HORIZON_PRESETS.map((h) => {
+        const active = h === value;
+        return (
+          <button
+            key={h}
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(h)}
+            className={cn(
+              "rounded px-2.5 py-1 font-mono text-[11px] font-semibold uppercase tracking-wider transition-colors",
+              active
+                ? "bg-surface-high text-on-surface"
+                : "text-on-surface-variant hover:bg-surface-low hover:text-on-surface",
+            )}
+          >
+            {h}
+          </button>
+        );
+      })}
     </div>
   );
 }

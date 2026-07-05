@@ -6,6 +6,25 @@ import { clamp, lerp } from "./stats";
 const MIN_HORIZON = 5;    // 5 minutes
 const MAX_HORIZON = 8190; // 21 trading days * 6.5h * 60min
 
+// User-facing horizon presets exposed by the dashboard selector.
+// 3d = shortest actionable swing window; 21d = one trading month.
+// Anything outside this whitelist is refused by the API so the scanner's
+// per-horizon cache can't grow unbounded from arbitrary query params.
+export const HORIZON_PRESETS = ["3d", "5d", "10d", "21d"] as const;
+export type HorizonPreset = typeof HORIZON_PRESETS[number];
+
+export function isHorizonPreset(spec: string): spec is HorizonPreset {
+  return (HORIZON_PRESETS as readonly string[]).includes(spec);
+}
+
+// Trading-minute values for each preset (used by the ladder + friction calc).
+export const HORIZON_PRESET_MINUTES: Record<HorizonPreset, number> = {
+  "3d":  3 * 6.5 * 60,
+  "5d":  5 * 6.5 * 60,
+  "10d": 10 * 6.5 * 60,
+  "21d": 21 * 6.5 * 60,
+};
+
 // Parse spec like "5m", "1h", "3d" -> trading minutes.
 // d = trading day = 390 minutes (6.5h). h = 60. m = 1.
 export function parseHorizon(spec: string): number {

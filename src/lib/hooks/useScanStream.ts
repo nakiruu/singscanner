@@ -31,8 +31,12 @@ const HISTORY_LEN = 30;   // ~last 30 snapshots ≈ 2.5min at 5s SSE tick
  * Subscribes to /api/scan/stream (SSE, event `snapshot`).
  * Falls back to polling /api/scan every 5s if SSE drops or errors.
  * Also accumulates a short per-symbol history for sparklines + mover detection.
+ *
+ * `horizon` optionally overrides the server default (?h= query param). When it
+ * changes, the SSE + polling loops tear down and restart against the new
+ * horizon so the client always sees a coherent snapshot.
  */
-export function useScanStream(): UseScanStreamResult {
+export function useScanStream(horizon?: string): UseScanStreamResult {
   const [snapshot, setSnapshot] = useState<ScanSnapshot | null>(null);
   const [prevSnapshot, setPrevSnapshot] = useState<ScanSnapshot | null>(null);
   const [status, setStatus] = useState<ScanStreamStatus>("idle");
@@ -45,6 +49,20 @@ export function useScanStream(): UseScanStreamResult {
   const sseRef = useRef<EventSource | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Horizon just changed — dump the previous snapshot so the UI doesn't
+  // render a stale one against the newly-selected horizon's overlays.
+  // React docs' "adjusting state when a prop changes" pattern: setState
+  // during render is allowed for a same-component prop-derived reset.
+  // NB: historyRef is left alone. It's keyed by symbol, not horizon; stale
+  // samples roll off within HISTORY_LEN pushes as new snapshots arrive.
+  const [prevHorizon, setPrevHorizon] = useState(horizon);
+  if (horizon !== prevHorizon) {
+    setPrevHorizon(horizon);
+    setSnapshot(null);
+    setPrevSnapshot(null);
+    setStatus("connecting");
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -85,12 +103,19 @@ export function useScanStream(): UseScanStreamResult {
       }
     };
 
+    // Build a URL that carries the horizon override (if any).
+    const withHorizon = (path: string) => {
+      if (!horizon) return path;
+      const sep = path.includes("?") ? "&" : "?";
+      return `${path}${sep}h=${encodeURIComponent(horizon)}`;
+    };
+
     const startPolling = async () => {
       if (cancelled || pollTimerRef.current) return;
       setStatus("polling");
       const tick = async () => {
         try {
-          const res = await fetch("/api/scan", { cache: "no-store" });
+          const res = await fetch(withHorizon("/api/scan"), { cache: "no-store" });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const json = (await res.json()) as ScanSnapshot;
           applySnapshot(json);
@@ -106,7 +131,7 @@ export function useScanStream(): UseScanStreamResult {
       if (cancelled) return;
       setStatus("connecting");
       try {
-        const es = new EventSource("/api/scan/stream");
+        const es = new EventSource(withHorizon("/api/scan/stream"));
         sseRef.current = es;
 
         es.addEventListener("snapshot", (evt) => {
@@ -154,7 +179,7 @@ export function useScanStream(): UseScanStreamResult {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [horizon]);
 
   return {
     snapshot,
