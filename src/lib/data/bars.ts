@@ -16,6 +16,8 @@
 //   C:\Users\nicopc\Downloads\singscannerml1\engine.py (lines 629-633)
 // Citations in comments use the `data.py:NN` / `engine.py:NN` form.
 
+import { insertBars, queryBars, isClickhouseEnabled } from "./clickhouse";
+
 const DATA_BASE = "https://data.alpaca.markets/v2";
 
 // ---------------------------------------------------------------------------
@@ -115,6 +117,18 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
+// Threshold for "enough" bars from L2 before we skip Alpaca for a symbol.
+// Matches the *0.6 slack the Alpaca fetch already tolerates (data.py:273).
+function enoughDailyFromL2(bars: DailyBar[], lookbackDays: number): boolean {
+  return bars.length >= Math.floor(lookbackDays * 0.6);
+}
+function enoughIntradayFromL2(bars: IntradayBar[], lookbackMin: number, timeframe: IntradayTimeframe): boolean {
+  const barMin = timeframe === "1Min" ? 1 : 5;
+  const expected = Math.floor(lookbackMin / barMin);
+  // Intraday is stricter: require at least 80% of expected bars before trusting L2.
+  return bars.length >= Math.floor(expected * 0.8);
+}
+
 // ---------------------------------------------------------------------------
 // Caches (module-scope, TTL'd by stamp)
 // ---------------------------------------------------------------------------
@@ -162,14 +176,42 @@ export async function fetchDailyBars(
     return cached.bars;
   }
 
-  const result = new Map<string, DailyBar[]>();
-  try {
-    for (const group of chunk(symbols, 100)) {
-      await pullBars(group, "1Day", start, end, result);
+  // L2: ClickHouse. Pull whatever CH has for each symbol in the window.
+  const l2Result = new Map<string, DailyBar[]>();
+  const needFromAlpaca: string[] = [];
+  if (isClickhouseEnabled()) {
+    const startISO = start.toISOString();
+    const endISO = end.toISOString();
+    for (const sym of symbols) {
+      const rows = await queryBars(sym, "1Day", startISO, endISO);
+      if (enoughDailyFromL2(rows, lookbackDays)) {
+        l2Result.set(sym, rows);
+      } else {
+        needFromAlpaca.push(sym);
+      }
     }
-  } catch {
-    // Fail-open: return whatever (possibly empty) we managed to gather.
-    return result.size > 0 ? result : new Map();
+  } else {
+    needFromAlpaca.push(...symbols);
+  }
+
+  const result = new Map<string, DailyBar[]>(l2Result);
+  if (needFromAlpaca.length > 0) {
+    const fresh = new Map<string, DailyBar[]>();
+    try {
+      for (const group of chunk(needFromAlpaca, 100)) {
+        await pullBars(group, "1Day", start, end, fresh);
+      }
+    } catch {
+      // Fail-open: return whatever (possibly empty) we managed to gather.
+      if (result.size === 0 && fresh.size === 0) return new Map();
+    }
+    // Write fresh Alpaca bars back to CH (fire-and-forget) and merge.
+    for (const [sym, bars] of fresh) {
+      result.set(sym, bars);
+      if (isClickhouseEnabled()) {
+        void insertBars(sym, "1Day", bars);
+      }
+    }
   }
 
   dailyCache.set(cacheKey, { bars: result, ts: Date.now(), tradingDay });
@@ -196,13 +238,39 @@ export async function fetchIntradayBars(
     return cached.bars;
   }
 
-  const result = new Map<string, IntradayBar[]>();
-  try {
-    for (const group of chunk(symbols, 100)) {
-      await pullBars(group, timeframe, start, end, result);
+  const l2Result = new Map<string, IntradayBar[]>();
+  const needFromAlpaca: string[] = [];
+  if (isClickhouseEnabled()) {
+    const startISO = start.toISOString();
+    const endISO = end.toISOString();
+    for (const sym of symbols) {
+      const rows = (await queryBars(sym, timeframe, startISO, endISO)) as IntradayBar[];
+      if (enoughIntradayFromL2(rows, lookbackMin, timeframe)) {
+        l2Result.set(sym, rows);
+      } else {
+        needFromAlpaca.push(sym);
+      }
     }
-  } catch {
-    return result.size > 0 ? result : new Map();
+  } else {
+    needFromAlpaca.push(...symbols);
+  }
+
+  const result = new Map<string, IntradayBar[]>(l2Result);
+  if (needFromAlpaca.length > 0) {
+    const fresh = new Map<string, IntradayBar[]>();
+    try {
+      for (const group of chunk(needFromAlpaca, 100)) {
+        await pullBars(group, timeframe, start, end, fresh);
+      }
+    } catch {
+      if (result.size === 0 && fresh.size === 0) return new Map();
+    }
+    for (const [sym, bars] of fresh) {
+      result.set(sym, bars);
+      if (isClickhouseEnabled()) {
+        void insertBars(sym, timeframe, bars);
+      }
+    }
   }
 
   intradayCache.set(cacheKey, { bars: result, ts: Date.now() });
@@ -218,7 +286,7 @@ async function pullBars(
   timeframe: string,
   start: Date,
   end: Date,
-  sink: Map<string, DailyBar[]>,
+  sink: Map<string, DailyBar[]> | Map<string, IntradayBar[]>,
 ): Promise<void> {
   let pageToken: string | null = null;
   for (;;) {
