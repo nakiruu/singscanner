@@ -77,6 +77,15 @@ function roleParams(role: Role, calib: ReturnType<typeof calibrate>) {
   }
 }
 
+// Per-symbol forecast-strength scaler. Maps pUp∈[0,1] to a signed strength; the
+// long-band gate (memberPupMin=0.50) ensures qualifiers have pUp>=0.5, so this
+// produces [0, 1] for anything that clears the gate and 0 for anything below.
+// Without this, roleEdge is a role-level constant and modelEdge degenerates to
+// two values across the universe — see docs/superpowers/specs (audit 2026-07-07).
+function pUpScale(pUp: number): number {
+  return Math.max(0, 2 * pUp - 1);
+}
+
 // Map clock phase to the matching calibrated session multiplier.
 function sessionMultFor(phase: MarketPhase, calib: ReturnType<typeof calibrate>): number {
   switch (phase) {
@@ -267,10 +276,13 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
     };
   });
 
-  // Stage 6: roles. Use provisional edge = primary friction so every row is
-  // ranked on the same scale before bands are picked; per-row friction comes
-  // out of gateDecision after the assignment.
-  const provisional = stage1.map(() => calib.edgePrimary * calib.frictionPrimary);
+  // Stage 6: roles. Provisional edge scales by pUp so assignRoles sees real
+  // dispersion — otherwise every qualifier collides at maxEdge and secondary
+  // is unreachable (all-or-nothing primary vs none). Per-row friction still
+  // comes out of gateDecision after the assignment.
+  const provisional = stage1.map(
+    (s) => calib.edgePrimary * calib.frictionPrimary * pUpScale(s.pUp),
+  );
   const assignments = assignRoles(
     stage1.map((s, i) => ({
       evidence: s.evidence,
@@ -288,7 +300,11 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
   // target portfolio, then concentration bps come out of that).
   const pass1 = stage1.map((s, i) => {
     const role = assignments[i].role;
-    const { roleEdge, friction } = roleParams(role, calib);
+    const { roleEdge: baseRoleEdge, friction } = roleParams(role, calib);
+    // Scale roleEdge by forecast strength so modelEdge varies per symbol,
+    // not per role. pass2 destructures roleEdge from pass1, so this
+    // propagates through the concentration re-gate automatically.
+    const roleEdge = baseRoleEdge * pUpScale(s.pUp);
     const isMember = s.evidence >= calib.evidenceThreshold && s.pUp >= calib.memberPupMin;
     const p = s.pack;
 
