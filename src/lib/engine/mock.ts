@@ -11,7 +11,6 @@ import {
   computeStopTarget,
   computeHorizonLadder,
   DEFAULT_HORIZON_RUNGS,
-  starScore,
 } from "./levels";
 import { buildTargetPortfolio } from "./portfolio";
 import type { ScanRow, ScanSnapshot, Role } from "./types";
@@ -278,12 +277,11 @@ export function buildMockSnapshot(horizonSpec = "3d"): ScanSnapshot {
     r.stopLimitPx = st.stopLimit;
     r.fairValueTargetPx = st.fairValueTarget;
     r.takeProfitLimitPx = st.takeProfitLimit;
-    const targetUpPct = ((st.fairValueTarget - r.price) / r.price) * 100;
-    r.starScore = starScore({ netSurplus: r.net, confidence: r.confidence, risk: r.risk, targetUpPct });
+    r.starScore = r.net;
   });
   const buyScored = rows
     .filter((r, i) => r.decision === "BUY" && assignments[i].starEligible && r.starScore != null)
-    .sort((a, b) => (b.starScore ?? 0) - (a.starScore ?? 0));
+    .sort((a, b) => b.net - a.net);
   buyScored.slice(0, 5).forEach((r) => (r.star = true));
 
   return {

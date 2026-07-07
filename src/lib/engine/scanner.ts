@@ -22,7 +22,6 @@ import {
   computeStopTarget,
   computeHorizonLadder,
   DEFAULT_HORIZON_RUNGS,
-  starScore,
 } from "./levels";
 import { buildTargetPortfolio } from "./portfolio";
 import {
@@ -422,8 +421,7 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
     };
   });
 
-  // Stage 8: compute price levels + starScore for BUY rows. Uses fair-value
-  // upside (not the minRR-inflated legacy target) per SPECLIST §6.
+  // Stage 8: compute price levels for BUY rows; star = top-5 by net bps.
   const holdingDays = Math.max(1, horizonMin / 390);
   out.forEach((r, i) => {
     if (r.decision !== "BUY") return;
@@ -441,12 +439,11 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
     r.stopLimitPx = st.stopLimit;
     r.fairValueTargetPx = st.fairValueTarget;
     r.takeProfitLimitPx = st.takeProfitLimit;
-    const targetUpPct = ((st.fairValueTarget - r.price) / r.price) * 100;
-    r.starScore = starScore({ netSurplus: r.net, confidence: r.confidence, risk: r.risk, targetUpPct });
+    r.starScore = r.net;
   });
   const scored = out
     .filter((r, i) => r.decision === "BUY" && assignments[i].starEligible && r.starScore != null)
-    .sort((a, b) => (b.starScore ?? 0) - (a.starScore ?? 0));
+    .sort((a, b) => b.net - a.net);
   scored.slice(0, 5).forEach((r) => (r.star = true));
 
   return {
