@@ -118,7 +118,7 @@ export function calibrate(horizonMin: number): Calibration {
     evidenceThreshold: 95,
     evidenceScale:     8,
     memberPupMin:      0.50,
-    primaryBand:       120,
+    primaryBand:       30,
     retainFloor:       40,
     minHurdle:         0,
     opRisk:            5,
