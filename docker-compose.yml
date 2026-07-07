@@ -37,6 +37,23 @@ services:
       timeout: 5s
       retries: 5
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    container_name: singscanner-ch
+    restart: unless-stopped
+    volumes:
+      - chdata:/var/lib/clickhouse
+      - ./services/clickhouse/init:/docker-entrypoint-initdb.d:ro
+    environment:
+      CLICKHOUSE_USER: singscanner
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-changeme}
+      CLICKHOUSE_DB: singscanner
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   app:
     build: .
     image: singscanner:latest
@@ -47,6 +64,8 @@ services:
         condition: service_healthy
       fundamentals:
         condition: service_started
+      clickhouse:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://singscanner:${POSTGRES_PASSWORD:-changeme}@postgres:5432/singscanner?schema=public
       FUNDAMENTALS_SIDECAR_URL: http://fundamentals:8000
@@ -63,9 +82,14 @@ services:
       SCANNER_MAX_SYMBOLS: ${SCANNER_MAX_SYMBOLS:-600}
       SCANNER_INTERVAL_S: ${SCANNER_INTERVAL_S:-15}
       SCANNER_MOCK: ${SCANNER_MOCK:-true}
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://clickhouse:8123}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-singscanner}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-changeme}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-singscanner}
     ports:
       - "3097:3000"
 
 volumes:
   pgdata:
   fundamentals_cache:
+  chdata:
