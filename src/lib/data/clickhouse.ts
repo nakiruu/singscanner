@@ -126,6 +126,58 @@ export async function queryBars(
   }
 }
 
+/**
+ * Batched bar read. Fetches bars for ALL requested symbols in a single CH query,
+ * returning a Map keyed by symbol. Symbols with no rows in CH are simply absent
+ * from the returned map — callers detect this and fall through to Alpaca.
+ *
+ * On any error or when CH is disabled, returns an empty Map (fail-open).
+ */
+export async function queryBarsMulti(
+  symbols: string[],
+  timeframe: BarTimeframe,
+  startISO: string,
+  endISO: string,
+): Promise<Map<string, DailyBar[]>> {
+  const c = getClient();
+  if (!c || symbols.length === 0) return new Map();
+  try {
+    const rs = await c.query({
+      query: `
+        SELECT
+          symbol,
+          formatDateTime(ts, '%Y-%m-%dT%H:%i:%SZ') AS t,
+          open AS o, high AS h, low AS l, close AS c, volume AS v, vwap AS vw
+        FROM bars FINAL
+        WHERE symbol IN ({symbols:Array(String)})
+          AND timeframe = {timeframe:String}
+          AND ts >= parseDateTimeBestEffort({start:String})
+          AND ts <= parseDateTimeBestEffort({end:String})
+        ORDER BY symbol ASC, ts ASC
+      `,
+      query_params: { symbols, timeframe, start: startISO, end: endISO },
+      format: "JSONEachRow",
+    });
+    const rows = (await rs.json()) as Array<{
+      symbol: string; t: string; o: number; h: number; l: number; c: number; v: number; vw: number | null;
+    }>;
+    const out = new Map<string, DailyBar[]>();
+    for (const r of rows) {
+      const bar: DailyBar = {
+        t: r.t, o: r.o, h: r.h, l: r.l, c: r.c, v: r.v,
+        ...(r.vw != null ? { vw: r.vw } : {}),
+      };
+      const existing = out.get(r.symbol);
+      if (existing) existing.push(bar);
+      else out.set(r.symbol, [bar]);
+    }
+    return out;
+  } catch (err) {
+    console.warn(`[clickhouse] queryBarsMulti(${symbols.length} symbols, ${timeframe}) failed:`, err);
+    return new Map();
+  }
+}
+
 // -- Scan snapshots + rows ----------------------------------------------------
 
 export async function insertSnapshot(snapshot: ScanSnapshot): Promise<string | null> {

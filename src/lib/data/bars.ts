@@ -16,7 +16,7 @@
 //   C:\Users\nicopc\Downloads\singscannerml1\engine.py (lines 629-633)
 // Citations in comments use the `data.py:NN` / `engine.py:NN` form.
 
-import { insertBars, queryBars, isClickhouseEnabled } from "./clickhouse";
+import { insertBars, queryBarsMulti, isClickhouseEnabled } from "./clickhouse";
 
 const DATA_BASE = "https://data.alpaca.markets/v2";
 
@@ -176,14 +176,15 @@ export async function fetchDailyBars(
     return cached.bars;
   }
 
-  // L2: ClickHouse. Pull whatever CH has for each symbol in the window.
+  // L2: ClickHouse. One batched query for the entire universe.
   const l2Result = new Map<string, DailyBar[]>();
   const needFromAlpaca: string[] = [];
   if (isClickhouseEnabled()) {
     const startISO = start.toISOString();
     const endISO = end.toISOString();
+    const batch = await queryBarsMulti(symbols, "1Day", startISO, endISO);
     for (const sym of symbols) {
-      const rows = await queryBars(sym, "1Day", startISO, endISO);
+      const rows = batch.get(sym) ?? [];
       if (enoughDailyFromL2(rows, lookbackDays)) {
         l2Result.set(sym, rows);
       } else {
@@ -238,13 +239,15 @@ export async function fetchIntradayBars(
     return cached.bars;
   }
 
+  // L2: ClickHouse. One batched query for the entire universe.
   const l2Result = new Map<string, IntradayBar[]>();
   const needFromAlpaca: string[] = [];
   if (isClickhouseEnabled()) {
     const startISO = start.toISOString();
     const endISO = end.toISOString();
+    const batch = (await queryBarsMulti(symbols, timeframe, startISO, endISO)) as Map<string, IntradayBar[]>;
     for (const sym of symbols) {
-      const rows = (await queryBars(sym, timeframe, startISO, endISO)) as IntradayBar[];
+      const rows = batch.get(sym) ?? [];
       if (enoughIntradayFromL2(rows, lookbackMin, timeframe)) {
         l2Result.set(sym, rows);
       } else {
