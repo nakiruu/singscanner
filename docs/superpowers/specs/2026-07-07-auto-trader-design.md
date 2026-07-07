@@ -267,14 +267,17 @@ CREATE TABLE IF NOT EXISTS trader_orders (
   submitted_at    DateTime64(3, 'UTC'),
   symbol          LowCardinality(String),
   side            LowCardinality(String),   -- 'buy' | 'sell'
-  order_type      LowCardinality(String),   -- 'bracket' | 'limit' | 'market' | 'close'
+  order_type      LowCardinality(String),   -- 'bracket' | 'limit' | 'market' | 'close' | 'repair'
   qty             Float32,
   limit_price     Nullable(Float32),
   stop_price      Nullable(Float32),
   target_price    Nullable(Float32),
-  reason          String,
+  reason          String,                   -- e.g. 'star-entry', 'sell-reversed', 'repair-orphan', 'partial-fill'
   alpaca_order_id String,
-  status          LowCardinality(String)    -- 'submitted' | 'filled' | 'canceled' | 'error'
+  status          LowCardinality(String),   -- 'submitted' | 'filled' | 'partial' | 'canceled' | 'error'
+  expected_price  Nullable(Float32),        -- pre-submit reference for slippage measurement
+  fill_price      Nullable(Float32),        -- populated on fill
+  slippage_bps    Nullable(Float32)         -- (fill_price - expected_price) / expected_price * 10000
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(submitted_at)
 ORDER BY (submitted_at, horizon, symbol);
@@ -286,7 +289,7 @@ CREATE TABLE IF NOT EXISTS trader_position_events (
   id             UUID DEFAULT generateUUIDv4(),
   horizon        LowCardinality(String),
   ts             DateTime64(3, 'UTC'),
-  event_kind     LowCardinality(String),    -- 'entry' | 'exit' | 'rotation'
+  event_kind     LowCardinality(String),    -- 'entry' | 'exit' | 'rotation' | 'partial-fill'
   symbol         LowCardinality(String),
   qty            Float32,
   fill_price     Float32,
@@ -353,6 +356,7 @@ TRADER_CASH_FLOOR_PCT=0.02
 TRADER_MIN_CONVICTION=1.0
 TRADER_MAX_CONVICTION=2.0
 TRADER_ROTATION_MIN_AGE_S=3600
+TRADER_REVERSAL_COOLDOWN_S=900                   # hard block on re-entering a just-closed symbol
 
 # Session
 TRADER_PREMARKET_MIN_HOUR=7                      # ET hour before which premarket entries blocked
@@ -363,7 +367,66 @@ TRADER_EXT_LIMIT_SLIP=0.001                      # 0.1% marketable-limit slip
 
 `docker-compose.yml` gains the new env vars on the `app` service (all default-empty so absent config = runner disabled).
 
-### 10. Failure modes
+### 10. Feedback loops back to the scanner
+
+The scanner's gate expects two inputs the trader supplies (per §11-12, §65 in SPECLIST): **realized slippage** and **action memory**. Without these, the gate uses conservative defaults and never learns from actual execution.
+
+**Slippage tracking** — every fill records `slip_bps = (fill_price − expected_price) / expected_price × 10000`, tagged with (symbol, side, session). Rolling window of 100 samples per (symbol, session) bucket kept in-memory + persisted to CH `trader_orders`. A new function in `src/lib/data/metrics.ts`:
+
+```ts
+export function recordSlippage(symbol: string, side: "buy"|"sell", session: MarketPhase, slipBps: number): void;
+export function getExpectedSlippageBps(symbol: string, side: "buy"|"sell", session: MarketPhase): number;
+```
+
+Scanner reads `getExpectedSlippageBps` (fallback: 15 bps regular, 45 bps extended) and adds it to `spreadBps` before calling the gate. Symbol-specific data overrides the default within ~5 fills.
+
+**Action memory** — per (symbol) rolling record of the last exit's timestamp and reason. Decays over the horizon `edgeHorizonMin`. Scanner reads a helper:
+
+```ts
+export function getActionMemoryBps(symbol: string, edgeHorizonMin: number): number;
+```
+
+Which returns `2 × getExpectedSlippageBps` scaled by `max(0, 1 − age / edgeHorizonMin)`. Feeds directly into gate.ts's existing `actionMemoryBps` parameter (currently always 0). Blocks rapid buy-after-sell reversals from clearing the gate on the same signal that just fired.
+
+Both helpers are stateless in the trader — pure reads/writes against the metrics module. No new tables.
+
+### 11. Reversal cooldown
+
+Distinct from `TRADER_ROTATION_MIN_AGE_S` (which limits how soon a position can be *rotated out*). The reversal cooldown limits how soon a *just-closed* symbol can be *re-entered*.
+
+```
+TRADER_REVERSAL_COOLDOWN_S=900   # 15 min default; blocks re-entry after any exit
+```
+
+Enforced inside the runner's BUY step (§2 step 7): if `now - lastExitTs[symbol] < TRADER_REVERSAL_COOLDOWN_S`, skip that candidate and count it toward the cycle's skipped list. The action-memory cost (§10) also applies through the gate; the cooldown is a hard guard on top.
+
+Rationale: a symbol that just hit "reversed" or "deteriorated" 5 minutes ago has almost certainly not repaired its signal. Re-entering on the next snapshot flips the trader in and out with 100% chance of paying the round-trip cost.
+
+### 12. Repair actions
+
+Distinct from alpha trades. Repair orders exist to heal broker-state drift, not to capture edge. Each cycle after §2 step 3 (`syncOpenOrders`) and before §2 step 5 (SELLS), the runner runs a repair pass:
+
+- **Orphaned sell orders:** an open `sell` order for a symbol we no longer hold → cancel it.
+- **Duplicate sell orders:** two open sell brackets for the same held symbol → cancel all but the one whose stop/target matches the current scan's levels most closely; if none match, cancel all and re-attach in §2 step 6.
+- **Open buy orders for held positions:** a stale open `buy` on a symbol we already hold → cancel it (would double our exposure on fill).
+- **Positions with no open sell bracket AND no `closing[symbol]` timer:** re-attach in §2 step 6 (already covered; noted here for completeness).
+
+Repair actions log to `trader_orders` with `reason='repair-<kind>'` so the audit trail distinguishes them from alpha trades. Repairs do NOT emit `PositionEvent`s (they're not fills).
+
+### 13. Partial fill handling
+
+Bracket order partial fills leave inconsistent state: entry filled 50 shares, stop leg armed for 50 shares, but our internal ledger expected 100. Explicit handling:
+
+- **On `syncPositions()`:** compare the current position qty against the trader's own tracked "target qty" for that symbol (recorded when the entry order was submitted). Difference > 0 = partial.
+- **If partial (`actual_qty < target_qty`):**
+  - Do NOT submit a follow-up buy for the missing qty. The bracket order is done; re-entering could double-fill.
+  - Cancel any residual open buy legs for this symbol (repair pass catches this too).
+  - Re-attach the sell bracket for the actual qty if it's mis-sized (§2 step 6 handles this by re-computing bracket for current holdings).
+  - Emit `PositionEvent` with `qty = actual_qty` and `reason='partial-fill'`.
+
+Partial fills are treated as successful trades at a smaller size — never as failures that need retry. Whole-share only (v1) means partial fills are rare (a bracket typically fills fully within the same bar) but the guard is required for correctness.
+
+### 14. Failure modes
 
 | Failure | Behaviour |
 |---|---|
@@ -375,15 +438,18 @@ TRADER_EXT_LIMIT_SLIP=0.001                      # 0.1% marketable-limit slip
 | Duplicate closes | `closing[symbol]` timeout of 600s prevents re-submitting a close until the previous one resolves or expires. |
 | Bracket sanitization fails | Skip the entry/re-attach. Log to `trader_orders` with `status='error'`. |
 | Broker constructor gets non-paper URL | Throws immediately. Runner disabled. |
+| Partial fill | Accept the smaller size; do not re-issue for missing qty (see §13). |
+| Orphaned Alpaca orders | Repair pass cancels them (see §12). |
+| Just-closed symbol re-appearing as BUY | Reversal cooldown blocks entry for `TRADER_REVERSAL_COOLDOWN_S` (§11). |
 
-### 11. Observability
+### 15. Observability
 
 - Every submitted order → row in `trader_orders`.
 - Every fill (entry/exit/rotation) → row in `trader_position_events` AND in-process `EventEmitter` for C.
 - `recordTraderCycle(horizon, durationMs, entries, exits, errors)` → added to `src/lib/data/metrics.ts`.
 - Admin dashboard's Pipeline Health section (Task 8 of the admin plan, `PipelineHealthSection.tsx`) gains three stat tiles per horizon: last cycle age, entries+exits last hour, error count. Extension is additive — the existing four stats stay put.
 
-### 12. Files
+### 16. Files
 
 **Create:**
 - `src/lib/trader/broker.ts` — Broker class + types + BrokerError.
@@ -397,10 +463,11 @@ TRADER_EXT_LIMIT_SLIP=0.001                      # 0.1% marketable-limit slip
 **Modify:**
 - `services/clickhouse/init/01_schema.sql` — no change (kept immutable). New tables live in `02_trader_schema.sql`.
 - `docker-compose.yml` — add all `TRADER_*` env vars on the `app` service, default-empty.
-- `src/lib/data/metrics.ts` — add `recordTraderCycle(...)` + `getTraderCycleStats(horizon)`.
+- `src/lib/data/metrics.ts` — add `recordTraderCycle(...)`, `getTraderCycleStats(horizon)`, plus the slippage/action-memory feedback helpers from §10 (`recordSlippage`, `getExpectedSlippageBps`, `getActionMemoryBps`, `recordExit`).
+- `src/lib/engine/scanner.ts` — pass `getActionMemoryBps(symbol, horizonMin)` into each `gateDecision` call's `actionMemoryBps` parameter (currently hardcoded 0). Similarly, `getExpectedSlippageBps(symbol, "buy", currentSession)` added to `spreadBps` before gate call.
 - `src/instrumentation.ts` — Next.js 16's built-in server startup hook. Create if missing; call `bootstrapTraders()` from the exported `register()` function. This is the canonical Next.js pattern for one-time server-side init and guarantees a single call per server boot.
 
-### 13. Non-goals
+### 17. Non-goals
 
 - Non-paper (live) trading — the broker constructor guards against it.
 - Custom order types beyond bracket, market, limit.
