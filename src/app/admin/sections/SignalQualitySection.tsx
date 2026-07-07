@@ -6,7 +6,13 @@ import type { AdminSummary } from "@/app/api/admin/summary/route";
 
 type Signal = AdminSummary["signal"];
 
-export function SignalQualitySection({ signal }: { signal: Signal | null }) {
+export function SignalQualitySection({
+  signal,
+  onSymbolClick,
+}: {
+  signal: Signal | null;
+  onSymbolClick?: (symbol: string) => void;
+}) {
   if (!signal) {
     return <SectionCard title="Signal quality" subtitle="loading…"><Loading /></SectionCard>;
   }
@@ -79,7 +85,11 @@ export function SignalQualitySection({ signal }: { signal: Signal | null }) {
               {topStars.length === 0 ? (
                 <tr><td colSpan={5} className="py-2 text-on-surface-variant">no stars yet</td></tr>
               ) : topStars.map((s) => (
-                <tr key={s.symbol} className="border-t border-border/50">
+                <tr
+                  key={s.symbol}
+                  className="cursor-pointer border-t border-border/50 hover:bg-surface-default"
+                  onClick={() => onSymbolClick?.(s.symbol)}
+                >
                   <td className="text-tertiary">★</td>
                   <td className="text-on-surface font-semibold">{s.symbol}</td>
                   <td className="text-on-surface-variant">{s.role}</td>

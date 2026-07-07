@@ -9,6 +9,7 @@ import { SignalQualitySection } from "./sections/SignalQualitySection";
 import { PipelineHealthSection } from "./sections/PipelineHealthSection";
 import { BusinessSection } from "./sections/BusinessSection";
 import { ActivityDrawer } from "./ActivityDrawer";
+import { SymbolDrillDrawer } from "./SymbolDrillDrawer";
 
 const DRAWER_STORAGE_KEY = "admin.activityDrawer";
 
@@ -17,6 +18,7 @@ export function AdminDashboard() {
   const age = useAge(refreshedAt);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [focusedSymbol, setFocusedSymbol] = useState<string | null>(null);
   // Hydrate from localStorage after mount to avoid SSR hydration mismatch.
   useEffect(() => {
     try {
@@ -71,12 +73,15 @@ export function AdminDashboard() {
         </div>
 
         {/* Sections */}
-        <SignalQualitySection signal={data?.signal ?? null} />
+        <SignalQualitySection signal={data?.signal ?? null} onSymbolClick={setFocusedSymbol} />
         <PipelineHealthSection pipeline={data?.pipeline ?? null} />
         <BusinessSection business={data?.business ?? null} />
 
       </div>
-      <ActivityDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
+      <ActivityDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} onSymbolClick={setFocusedSymbol} />
+      {focusedSymbol && (
+        <SymbolDrillDrawer symbol={focusedSymbol} onClose={() => setFocusedSymbol(null)} />
+      )}
     </main>
   );
 }
