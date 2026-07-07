@@ -43,6 +43,7 @@ import { getClock, type ClockState, type MarketPhase } from "@/lib/data/clock";
 import { fetchActiveUniverse, type UniverseEntry } from "@/lib/data/universe";
 import { fetchFundamentals, type FundamentalRow } from "@/lib/ml/fundamentals-client";
 import { buildMockSnapshot } from "./mock";
+import { insertSnapshot, insertScanRows, isClickhouseEnabled } from "@/lib/data/clickhouse";
 
 const REFRESH_MS = Math.max(5_000, Number(process.env.SCANNER_INTERVAL_S ?? "0") * 1000 || 15_000);
 const MAX_SYMBOLS = Math.max(10, Number(process.env.SCANNER_MAX_SYMBOLS ?? "600"));
@@ -477,6 +478,15 @@ function resolveHorizon(horizonSpec?: string): string {
   return defaultHorizon();
 }
 
+// Fire-and-forget CH write for a fresh snapshot. Never blocks the scan path;
+// swallowed errors are already logged inside the clickhouse module.
+function persistSnapshotAsync(snap: ScanSnapshot): void {
+  if (!isClickhouseEnabled()) return;
+  void insertSnapshot(snap).then((id) => {
+    if (id) return insertScanRows(id, snap);
+  });
+}
+
 export async function getLatestSnapshot(horizonSpec?: string): Promise<ScanSnapshot> {
   const horizon = resolveHorizon(horizonSpec);
   let cache = caches.get(horizon);
@@ -494,6 +504,7 @@ export async function getLatestSnapshot(horizonSpec?: string): Promise<ScanSnaps
     entry.snapshot = snap;
     entry.ts = Date.now();
     entry.inflight = null;
+    persistSnapshotAsync(snap);
     return snap;
   }).catch((err) => {
     entry.inflight = null;
