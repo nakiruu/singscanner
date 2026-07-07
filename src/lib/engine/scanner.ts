@@ -45,7 +45,7 @@ import { fetchFundamentals, type FundamentalRow } from "@/lib/ml/fundamentals-cl
 import { buildMockSnapshot } from "./mock";
 
 const REFRESH_MS = Math.max(5_000, Number(process.env.SCANNER_INTERVAL_S ?? "0") * 1000 || 15_000);
-const MAX_SYMBOLS = Math.max(10, Number(process.env.SCANNER_MAX_SYMBOLS ?? "100"));
+const MAX_SYMBOLS = Math.max(10, Number(process.env.SCANNER_MAX_SYMBOLS ?? "600"));
 
 interface Cache {
   snapshot: ScanSnapshot | null;
