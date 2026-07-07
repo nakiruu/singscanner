@@ -8,6 +8,7 @@ import { useAge } from "./hooks/useAge";
 import { SignalQualitySection } from "./sections/SignalQualitySection";
 import { PipelineHealthSection } from "./sections/PipelineHealthSection";
 import { BusinessSection } from "./sections/BusinessSection";
+import { ActivityDrawer } from "./ActivityDrawer";
 
 const DRAWER_STORAGE_KEY = "admin.activityDrawer";
 
@@ -75,6 +76,7 @@ export function AdminDashboard() {
         <BusinessSection business={data?.business ?? null} />
 
       </div>
+      <ActivityDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />
     </main>
   );
 }
