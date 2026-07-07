@@ -1,4 +1,5 @@
 // Thin client for the fundamentals sidecar.
+import { recordError } from "@/lib/data/metrics";
 // Fails open: any network/transport error returns empty rows + everything
 // in skipped, so the scanner pipeline keeps running without fundamentals.
 //
@@ -77,6 +78,9 @@ export async function fetchFundamentals(symbols: string[]): Promise<Fundamentals
         console.warn("[fundamentals] sidecar fetch failed:", res.status, res.statusText);
       }
     } catch (err) {
+      if (err instanceof Error) {
+        recordError({ kind: "fundamentals", message: `sidecar transport error: ${err.message}`, stack: err.stack });
+      }
       console.warn("[fundamentals] sidecar transport error:", err);
     }
   }

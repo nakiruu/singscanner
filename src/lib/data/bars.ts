@@ -17,6 +17,7 @@
 // Citations in comments use the `data.py:NN` / `engine.py:NN` form.
 
 import { insertBars, queryBarsMulti, isClickhouseEnabled } from "./clickhouse";
+import { recordAlpacaFetch, recordError } from "./metrics";
 
 const DATA_BASE = "https://data.alpaca.markets/v2";
 
@@ -292,41 +293,52 @@ async function pullBars(
   sink: Map<string, DailyBar[]> | Map<string, IntradayBar[]>,
 ): Promise<void> {
   let pageToken: string | null = null;
-  for (;;) {
-    const params = new URLSearchParams({
-      symbols: group.join(","),
-      timeframe,
-      start: start.toISOString(),
-      end: end.toISOString(),
-      limit: "10000",
-      adjustment: "all",
-      feed: feed(),
-    });
-    if (pageToken) params.set("page_token", pageToken);
+  try {
+    for (;;) {
+      const params = new URLSearchParams({
+        symbols: group.join(","),
+        timeframe,
+        start: start.toISOString(),
+        end: end.toISOString(),
+        limit: "10000",
+        adjustment: "all",
+        feed: feed(),
+      });
+      if (pageToken) params.set("page_token", pageToken);
 
-    const res = await fetch(`${DATA_BASE}/stocks/bars?${params.toString()}`, {
-      headers: authHeaders(),
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      throw new AlpacaBarsError(
-        `alpaca bars failed: ${res.status} ${res.statusText}`,
-        res.status,
-      );
-    }
-    const data = (await res.json()) as BarsResponse;
-    const bars = data.bars ?? {};
-    for (const sym of Object.keys(bars)) {
-      const list = bars[sym];
-      if (!list || list.length === 0) continue;
-      const existing = sink.get(sym) ?? [];
-      for (const b of list) {
-        existing.push({ t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v, vw: b.vw });
+      const res = await fetch(`${DATA_BASE}/stocks/bars?${params.toString()}`, {
+        headers: authHeaders(),
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        throw new AlpacaBarsError(
+          `alpaca bars failed: ${res.status} ${res.statusText}`,
+          res.status,
+        );
       }
-      sink.set(sym, existing);
+      const data = (await res.json()) as BarsResponse;
+      const bars = data.bars ?? {};
+      for (const sym of Object.keys(bars)) {
+        const list = bars[sym];
+        if (!list || list.length === 0) continue;
+        const existing = sink.get(sym) ?? [];
+        for (const b of list) {
+          existing.push({ t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v, vw: b.vw });
+        }
+        sink.set(sym, existing);
+      }
+      pageToken = data.next_page_token;
+      if (!pageToken) break;
     }
-    pageToken = data.next_page_token;
-    if (!pageToken) break;
+    recordAlpacaFetch(true);
+  } catch (err) {
+    recordAlpacaFetch(false);
+    if (err instanceof Error) {
+      recordError({ kind: "alpaca", message: err.message, stack: err.stack });
+    } else {
+      recordError({ kind: "alpaca", message: String(err) });
+    }
+    throw err;
   }
 }
 

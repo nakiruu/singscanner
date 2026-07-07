@@ -8,6 +8,7 @@ import { createClient, type ClickHouseClient } from "@clickhouse/client";
 import { randomUUID } from "crypto";
 import type { DailyBar, IntradayBar } from "./bars";
 import type { ScanSnapshot } from "@/lib/engine/types";
+import { recordError } from "./metrics";
 
 export type BarTimeframe = "1Day" | "5Min" | "1Min";
 
@@ -80,6 +81,9 @@ export async function insertBars(
       format: "JSONEachRow",
     });
   } catch (err) {
+    if (err instanceof Error) {
+      recordError({ kind: "ch", message: `insertBars(${symbol}, ${timeframe}): ${err.message}`, stack: err.stack });
+    }
     console.warn(`[clickhouse] insertBars(${symbol}, ${timeframe}) failed:`, err);
   }
 }
@@ -121,6 +125,9 @@ export async function queryBars(
       ...(r.vw != null ? { vw: r.vw } : {}),
     }));
   } catch (err) {
+    if (err instanceof Error) {
+      recordError({ kind: "ch", message: `queryBars(${symbol}, ${timeframe}): ${err.message}`, stack: err.stack });
+    }
     console.warn(`[clickhouse] queryBars(${symbol}, ${timeframe}) failed:`, err);
     return [];
   }
@@ -173,6 +180,9 @@ export async function queryBarsMulti(
     }
     return out;
   } catch (err) {
+    if (err instanceof Error) {
+      recordError({ kind: "ch", message: `queryBarsMulti(${symbols.length} symbols, ${timeframe}): ${err.message}`, stack: err.stack });
+    }
     console.warn(`[clickhouse] queryBarsMulti(${symbols.length} symbols, ${timeframe}) failed:`, err);
     return new Map();
   }
@@ -199,6 +209,9 @@ export async function insertSnapshot(snapshot: ScanSnapshot): Promise<string | n
     });
     return id;
   } catch (err) {
+    if (err instanceof Error) {
+      recordError({ kind: "ch", message: `insertSnapshot: ${err.message}`, stack: err.stack });
+    }
     console.warn("[clickhouse] insertSnapshot failed:", err);
     return null;
   }
@@ -237,6 +250,9 @@ export async function insertScanRows(
       format: "JSONEachRow",
     });
   } catch (err) {
+    if (err instanceof Error) {
+      recordError({ kind: "ch", message: `insertScanRows(${snapshotId}): ${err.message}`, stack: err.stack });
+    }
     console.warn(`[clickhouse] insertScanRows(${snapshotId}) failed:`, err);
   }
 }

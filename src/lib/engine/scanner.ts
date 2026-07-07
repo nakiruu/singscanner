@@ -44,6 +44,7 @@ import { fetchActiveUniverse, type UniverseEntry } from "@/lib/data/universe";
 import { fetchFundamentals, type FundamentalRow } from "@/lib/ml/fundamentals-client";
 import { buildMockSnapshot } from "./mock";
 import { insertSnapshot, insertScanRows, isClickhouseEnabled } from "@/lib/data/clickhouse";
+import { recordScanDuration } from "@/lib/data/metrics";
 
 const REFRESH_MS = Math.max(5_000, Number(process.env.SCANNER_INTERVAL_S ?? "0") * 1000 || 15_000);
 const MAX_SYMBOLS = Math.max(10, Number(process.env.SCANNER_MAX_SYMBOLS ?? "600"));
@@ -152,6 +153,8 @@ function rawInputsFor(p: SymbolPack): RawSymbolInputs {
 
 // Build the live snapshot from real Alpaca + fundamentals + clock.
 async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
+  const start = Date.now();
+  try {
   const horizonMin = parseHorizon(horizonSpec);
   const calib = calibrate(horizonMin);
 
@@ -471,6 +474,9 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
     rows: out.sort((a, b) => Number(b.star) - Number(a.star) || b.net - a.net),
     cashWeight: portfolio.cashWeight,
   };
+  } finally {
+    recordScanDuration(Date.now() - start);
+  }
 }
 
 // Silence unused-var warnings for types only referenced for clarity.
