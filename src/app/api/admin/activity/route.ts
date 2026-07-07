@@ -50,7 +50,7 @@ async function fetchScanEvents(): Promise<AdminActivityEvent[]> {
   const rows = await chJson<{ id: string; ts: string; symbolsScanned: number; primary: number; stars: number }>(
     `SELECT
        toString(s.id) AS id,
-       toString(s.generated_at) AS ts,
+       formatDateTime(s.generated_at, '%Y-%m-%dT%H:%M:%SZ') AS ts,
        s.symbols_scanned AS symbolsScanned,
        countIf(r.role = 'primary') AS primary,
        countIf(r.star = 1) AS stars
@@ -75,7 +75,7 @@ async function fetchScanEvents(): Promise<AdminActivityEvent[]> {
 async function fetchStarTransitions(): Promise<AdminActivityEvent[]> {
   // Get the last 20 scans' star sets ordered oldest→newest, then diff pairs.
   const rows = await chJson<{ ts: string; symbols: string[] }>(
-    `SELECT toString(generated_at) AS ts,
+    `SELECT formatDateTime(generated_at, '%Y-%m-%dT%H:%M:%SZ') AS ts,
             groupArrayIf(symbol, star = 1) AS symbols
      FROM scan_rows
      WHERE generated_at >= now() - INTERVAL 4 HOUR

@@ -169,6 +169,7 @@ export async function GET() {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
+  // Auth checked above — safe to serve cached payload without re-verifying.
   if (cache && Date.now() - cache.ts < CACHE_TTL_MS) {
     return NextResponse.json(cache.payload);
   }
