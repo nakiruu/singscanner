@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { useSummaryPolling } from "./hooks/useSummaryPolling";
 import { useAge } from "./hooks/useAge";
 import { SignalQualitySection } from "./sections/SignalQualitySection";
+import { ShadowSection } from "./sections/ShadowSection";
 import { PipelineHealthSection } from "./sections/PipelineHealthSection";
 import { BusinessSection } from "./sections/BusinessSection";
 import { ActivityDrawer } from "./ActivityDrawer";
@@ -74,6 +75,7 @@ export function AdminDashboard() {
 
         {/* Sections */}
         <SignalQualitySection signal={data?.signal ?? null} onSymbolClick={setFocusedSymbol} />
+        <ShadowSection />
         <PipelineHealthSection pipeline={data?.pipeline ?? null} />
         <BusinessSection business={data?.business ?? null} />
 
