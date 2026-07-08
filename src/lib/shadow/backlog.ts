@@ -51,7 +51,7 @@ export async function runHistoricalBacklog(
   monitor: ShadowMonitor,
   opts: { force?: boolean } = {},
 ): Promise<void> {
-  const horizon = (monitor as unknown as { horizon: "3d"|"5d"|"10d" }).horizon;
+  const horizon = monitor.horizonKey;
   const key = horizon;
   const existing = await countResolvedHistorical(horizon);
   if (existing > 0 && !opts.force) return;

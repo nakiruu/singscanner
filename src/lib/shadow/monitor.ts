@@ -5,6 +5,7 @@ import { DynamicActionValueChallenger } from "./dynamic-challenger";
 import {
   insertPending,
   queryPendingExpired,
+  queryOpenPendingKeys,
   deletePending,
   insertResolved,
   newId,
@@ -49,6 +50,14 @@ export class ShadowMonitor {
 
   async init(): Promise<void> {
     await this.challenger.load();
+    // Seed openKeys from durable storage so dedup survives restarts.
+    const keys = await queryOpenPendingKeys(this.horizon);
+    for (const k of keys) this.openKeys.add(k);
+  }
+
+  /** Public accessor so backlog.ts can read horizon without unsafe casts. */
+  get horizonKey(): "3d" | "5d" | "10d" {
+    return this.horizon;
   }
 
   getChallenger(): DynamicActionValueChallenger {
@@ -86,7 +95,6 @@ export class ShadowMonitor {
 
         const dedupKey = `${row.symbol}|${row.decision}|${chalDecision}`;
         if (this.openKeys.has(dedupKey)) continue;
-        this.openKeys.add(dedupKey);
 
         const pending: PendingRow = {
           id: newId(),
@@ -102,7 +110,9 @@ export class ShadowMonitor {
           features,
           source: "live",
         };
-        await insertPending(pending);
+        // Only add to openKeys if the insert succeeded; if not, retry next scan.
+        const inserted = await insertPending(pending);
+        if (inserted) this.openKeys.add(dedupKey);
       }
 
       void this.resolvePending();
@@ -119,29 +129,38 @@ export class ShadowMonitor {
   // -- Resolution ----------------------------------------------------------
 
   async resolvePending(): Promise<void> {
+    // nDays = exact trading-day count (3, 5, or 10) derived from HORIZON_RESOLUTION_MS.
+    // Calendar lower bound: submitted_at <= now − nDays×24h (ensures enough wall-clock
+    // time has elapsed for N trading days to have been published; bar-count gates below).
     const windowMs = HORIZON_RESOLUTION_MS[this.horizon];
-    const rows = await queryPendingExpired(this.horizon, windowMs);
+    const nDays = Math.round(windowMs / TRADING_DAY_MS);
+    const calendarCutoffMs = nDays * 24 * 60 * 60 * 1000;
+    const giveUpMs = 4 * nDays * 24 * 60 * 60 * 1000 * (7 / 5);
+    const rows = await queryPendingExpired(this.horizon, calendarCutoffMs);
     if (rows.length === 0) return;
 
     for (const row of rows) {
-      // Forward-price lookup: earliest daily bar after submitted_at.
+      // Query all daily bars from submitted_at to now; collect bars strictly after
+      // submitted_at ascending — the Nth is the N-th trading-day close.
       const submittedIso = row.submittedAt;
       const endIso = new Date(Date.now() + 1000).toISOString();
       const bars = await queryBars(row.symbol, "1Day", submittedIso, endIso);
-      // Skip the first bar if it equals the submitted timestamp exactly.
-      const forwardBar = bars.find(
-        (b) => new Date(b.t).getTime() > new Date(submittedIso).getTime(),
-      );
-      if (!forwardBar) {
-        // No data: drop from the openKeys set so future divergences can log.
-        this.openKeys.delete(`${row.symbol}|${row.baselineDecision}|${row.challengerDecision}`);
-        // Only truly expire (delete) if past 4×window; otherwise leave pending
-        // for later retry.
-        const age = Date.now() - new Date(submittedIso).getTime();
-        if (age > 4 * windowMs) await deletePending(row.id);
+      const submittedMs = new Date(submittedIso).getTime();
+      const forwardBars = bars
+        .filter((b) => new Date(b.t).getTime() > submittedMs)
+        .sort((a, b) => new Date(a.t).getTime() - new Date(b.t).getTime());
+
+      const age = Date.now() - submittedMs;
+      if (forwardBars.length < nDays) {
+        // Not enough bars yet: leave pending unless past generous give-up bound.
+        if (age > giveUpMs) {
+          this.openKeys.delete(`${row.symbol}|${row.baselineDecision}|${row.challengerDecision}`);
+          await deletePending(row.id);
+        }
         continue;
       }
-      const forwardPrice = forwardBar.c;
+      // Use the Nth trading-day close (0-indexed: bars[nDays-1]).
+      const forwardPrice = forwardBars[nDays - 1].c;
       const realizedBps = (forwardPrice / row.entryPrice - 1) * 10000;
       const baselineValueBps = valueOf(row.baselineDecision, realizedBps);
       const challengerValueBps = valueOf(row.challengerDecision, realizedBps);

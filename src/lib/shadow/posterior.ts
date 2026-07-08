@@ -18,12 +18,17 @@ export interface Posterior {
   reason: string;
 }
 
+function envNum(key: string, fallback: number): number {
+  const v = Number(process.env[key]);
+  return Number.isFinite(v) ? v : fallback;
+}
+
 const DEFAULT_OPTS: Required<PosteriorOpts> = {
-  kappa0: 7,
-  delta0: 0,
-  minCleanRows: 30,
-  minPositiveShare: 0.55,
-  minPosteriorDelta: 0,
+  kappa0:           envNum("SHADOW_KAPPA0",                  7),
+  delta0:           envNum("SHADOW_DELTA0",                  0),
+  minCleanRows:     envNum("SHADOW_MIN_CLEAN_ROWS",          30),
+  minPositiveShare: envNum("SHADOW_MIN_POSITIVE_SHARE",      0.55),
+  minPosteriorDelta: envNum("SHADOW_MIN_POSTERIOR_DELTA_BPS", 0),
 };
 
 export function computePosterior(

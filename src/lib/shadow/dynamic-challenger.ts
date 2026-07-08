@@ -122,6 +122,8 @@ export class DynamicActionValueChallenger {
 
   update(bucket: string, features: number[], realizedValueBps: number): void {
     if (features.length !== N_FEATURES) return;
+    // Guard against NaN poisoning from CH string round-trips.
+    if (!Number.isFinite(realizedValueBps) || features.some((f) => !Number.isFinite(f))) return;
     let b = this.buckets.get(bucket);
     if (!b) {
       b = emptyBucket(bucket);

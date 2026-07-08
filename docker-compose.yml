@@ -86,6 +86,7 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-singscanner}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-changeme}
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-singscanner}
+      SHADOW_ENABLED: ${SHADOW_ENABLED:-true}
     ports:
       - "3097:3000"
 

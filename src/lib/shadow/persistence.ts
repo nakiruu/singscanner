@@ -77,9 +77,9 @@ export function newId(): string {
 
 // -- Pending ------------------------------------------------------------------
 
-export async function insertPending(row: PendingRow): Promise<void> {
+export async function insertPending(row: PendingRow): Promise<boolean> {
   const c = getClient();
-  if (!c) return;
+  if (!c) return false;
   try {
     await c.insert({
       table: "shadow_pending",
@@ -99,8 +99,35 @@ export async function insertPending(row: PendingRow): Promise<void> {
       }],
       format: "JSONEachRow",
     });
+    return true;
   } catch (err) {
     recordError({ kind: "ch", message: `shadow insertPending: ${(err as Error)?.message}` });
+    return false;
+  }
+}
+
+/** Fail-open: returns `symbol|baseline_decision|challenger_decision` keys for
+ *  all pending rows of the given horizon so monitors can seed openKeys on restart. */
+export async function queryOpenPendingKeys(horizon: string): Promise<string[]> {
+  const c = getClient();
+  if (!c) return [];
+  try {
+    const rs = await c.query({
+      query: `
+        SELECT
+          symbol,
+          baseline_decision AS base,
+          challenger_decision AS chal
+        FROM shadow_pending
+        WHERE horizon = {horizon:String}
+      `,
+      query_params: { horizon },
+      format: "JSONEachRow",
+    });
+    const rows = (await rs.json()) as Array<{ symbol: string; base: string; chal: string }>;
+    return rows.map((r) => `${r.symbol}|${r.base}|${r.chal}`);
+  } catch {
+    return [];
   }
 }
 
@@ -135,7 +162,14 @@ export async function queryPendingExpired(
       },
       format: "JSONEachRow",
     });
-    return (await rs.json()) as PendingRow[];
+    const raw = (await rs.json()) as Array<Record<string, unknown>>;
+    return raw.map((r) => ({
+      ...(r as unknown as PendingRow),
+      baselineNetBps: Number(r.baselineNetBps),
+      challengerNetBps: Number(r.challengerNetBps),
+      entryPrice: Number(r.entryPrice),
+      features: (r.features as unknown[]).map(Number),
+    }));
   } catch {
     return [];
   }
@@ -312,7 +346,8 @@ export async function queryHistoricalDailyDelta(
       query_params: { horizon },
       format: "JSONEachRow",
     });
-    return (await rs.json()) as Array<{ day: string; mean_delta_bps: number; n: number }>;
+    const raw = (await rs.json()) as Array<{ day: string; mean_delta_bps: unknown; n: unknown }>;
+    return raw.map((r) => ({ day: r.day, mean_delta_bps: Number(r.mean_delta_bps), n: Number(r.n) }));
   } catch {
     return [];
   }
