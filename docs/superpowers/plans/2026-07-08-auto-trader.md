@@ -28,6 +28,7 @@ The spec was written against auto3's Python row shape. This codebase differs in 
 - **Magic numbers (verbatim):** closing tombstone 600 000 ms; stale-scan cutoff 300 000 ms; 429 backoff 250 ms / 1000 ms / 3000 ms then fail; slippage fallback 15 bps regular / 45 bps otherwise; slippage override after ≥ 5 samples; slippage ring buffer 100 per (symbol, side, session); action memory = `2 × expectedSlipBps × max(0, 1 − ageMin/edgeHorizonMin)`.
 - **Fail-open persistence:** every CH function in `src/lib/trader/persistence.ts` catches internally, calls `recordError({ kind: "ch", ... })`, and returns a safe default. It never throws. Follow the pattern in `src/lib/shadow/persistence.ts`.
 - **Runner failures never crash the server:** every cycle body is wrapped in try/catch; broker errors log via `recordError({ kind: "alpaca", ... })` and skip the cycle.
+- **Cross-bundle singletons on `globalThis`:** any mutable module state written by the runners (bootstrapped from `instrumentation.ts`) and read by route handlers or the scanner MUST be anchored on `globalThis` (see Task 5 metrics and Task 8 runner registry). Next.js compiles instrumentation and route handlers into separate bundles with separate module instances — plain module-level Maps are invisible across the boundary (verified failure 2026-07-08 in the shadow monitors).
 - **The trader never mutates scanner state.** The only scanner changes are the two gate inputs in Task 9 (`actionMemoryBps`, slippage added to gate `spreadBps`).
 - **No test framework in this repo.** The gate per task is: `npm run build` (must pass) + `npx eslint <changed files>` (no NEW errors; 8 pre-existing errors live in unrelated files — do not fix or add to them). Never use synchronous `setState` in an effect body (`react-hooks/set-state-in-effect` is enforced).
 - **CH conventions:** `JSONEachRow` inserts, `Number()` coercion on numeric round-trips, timestamps via `new Date(ms).toISOString()` on insert, bound `query_params` for any interpolated value.
@@ -663,10 +664,27 @@ Add at the end of the file (and add `import type { MarketPhase } from "@/lib/dat
 
 ```ts
 // -- Trader cycles (sub-project A) --------------------------------------------
+// IMPORTANT: all trader metric state below is anchored on globalThis. The
+// runner records from the instrumentation bundle while the scanner and admin
+// routes read from route-handler bundles — Next.js gives each bundle its OWN
+// module instance, so plain module-level Maps would never be visible to
+// readers. (Verified failure mode 2026-07-08 in the shadow monitors.)
 
 interface TraderCycleSample { ts: number; durationMs: number; entries: number; exits: number; errors: number }
 const CYCLE_BUF_SIZE = 300;
-const cycleBufs = new Map<string, TraderCycleSample[]>();
+
+type TraderMetricsState = {
+  cycleBufs: Map<string, TraderCycleSample[]>;
+  slipBufs: Map<string, number[]>;
+  lastExitTs: Map<string, number>;
+};
+const globalTraderMetrics = globalThis as unknown as { __traderMetrics?: TraderMetricsState };
+const traderMetrics: TraderMetricsState = (globalTraderMetrics.__traderMetrics ??= {
+  cycleBufs: new Map(),
+  slipBufs: new Map(),
+  lastExitTs: new Map(),
+});
+const { cycleBufs, slipBufs, lastExitTs } = traderMetrics;
 
 export function recordTraderCycle(
   horizon: string, durationMs: number, entries: number, exits: number, errors: number,
@@ -697,7 +715,6 @@ export function getTraderCycleStats(horizon: string): {
 
 const SLIP_WINDOW = 100;
 const SLIP_MIN_SAMPLES = 5;
-const slipBufs = new Map<string, number[]>();
 
 function slipKey(symbol: string, side: "buy" | "sell", session: MarketPhase): string {
   return `${symbol}|${side}|${session}`;
@@ -727,8 +744,6 @@ export function getExpectedSlippageBps(
 // -- Action memory (spec §10 / gate.ts actionMemoryBps) -------------------------
 // Per-symbol timestamp of the last trader exit. Cost decays linearly over the
 // edge horizon: 2 × expected slippage × max(0, 1 − ageMin/edgeHorizonMin).
-
-const lastExitTs = new Map<string, number>();
 
 export function recordExit(symbol: string): void {
   lastExitTs.set(symbol, Date.now());
@@ -1518,12 +1533,27 @@ export type { PositionEvent, TraderHorizon } from "./runner";
 export type { AccountSnapshot, OpenOrder, PositionState } from "./broker";
 
 const HORIZONS: TraderHorizon[] = ["3d", "5d", "10d"];
-const runners = new Map<TraderHorizon, TraderRunner>();
-let bootstrapped = false;
+
+// Next.js compiles instrumentation.ts and route handlers into SEPARATE
+// bundles, each with its own copy of this module's top-level state. Anchor
+// the singleton on globalThis so bootstrap (instrumentation) and consumers
+// (admin routes, sub-project B) share the same runners. Verified failure
+// mode 2026-07-08: the shadow monitors used plain module state and the API
+// routes saw an empty map while bootstrap had populated its own copy.
+type TraderState = {
+  runners: Map<TraderHorizon, TraderRunner>;
+  bootstrapped: boolean;
+};
+const globalTrader = globalThis as unknown as { __traderState?: TraderState };
+const state: TraderState = (globalTrader.__traderState ??= {
+  runners: new Map(),
+  bootstrapped: false,
+});
+const runners = state.runners;
 
 export function bootstrapTraders(): void {
-  if (bootstrapped) return;
-  bootstrapped = true;
+  if (state.bootstrapped) return;
+  state.bootstrapped = true;
   if (process.env.TRADER_ENABLED !== "true") {
     console.log("[trader] TRADER_ENABLED != 'true'; runners disabled");
     return;

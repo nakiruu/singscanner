@@ -32,7 +32,13 @@ export interface BacklogProgress {
   error: string | null;
 }
 
-const progressByHorizon = new Map<string, BacklogProgress>();
+// Anchored on globalThis: instrumentation and route-handler bundles each get
+// their own module instance, but must share backlog progress state.
+const globalBacklog = globalThis as unknown as {
+  __shadowBacklogProgress?: Map<string, BacklogProgress>;
+};
+const progressByHorizon: Map<string, BacklogProgress> =
+  (globalBacklog.__shadowBacklogProgress ??= new Map());
 
 export function getBacklogProgress(horizon: "3d" | "5d" | "10d"): BacklogProgress {
   return (
@@ -54,7 +60,11 @@ export async function runHistoricalBacklog(
   const horizon = monitor.horizonKey;
   const key = horizon;
   const existing = await countResolvedHistorical(horizon);
-  if (existing > 0 && !opts.force) return;
+  if (existing > 0 && !opts.force) {
+    console.log(`[shadow] ${horizon} backlog skipped (${existing} historical rows exist)`);
+    return;
+  }
+  console.log(`[shadow] ${horizon} backlog starting (lookback ${HISTORICAL_LOOKBACK_DAYS}d)`);
 
   const progress: BacklogProgress = {
     horizon,
@@ -145,9 +155,13 @@ export async function runHistoricalBacklog(
     }
     await challenger.flushNow();
     progress.running = false;
+    console.log(
+      `[shadow] ${horizon} backlog complete: ${progress.samplesAdded} samples over ${progress.daysProcessed} days`,
+    );
   } catch (err) {
     progress.error = (err as Error).message;
     progress.running = false;
+    console.warn(`[shadow] ${horizon} backlog failed:`, err);
   }
 }
 

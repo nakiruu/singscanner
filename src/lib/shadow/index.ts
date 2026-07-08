@@ -9,16 +9,29 @@ export { getBacklogProgress, runHistoricalBacklog };
 const HORIZONS = ["3d", "5d", "10d"] as const;
 type Horizon = typeof HORIZONS[number];
 
-const monitors = new Map<Horizon, ShadowMonitor>();
-let bootstrapped = false;
+// Next.js compiles instrumentation.ts and route handlers into separate
+// bundles, each with its own copy of this module's top-level state. Anchor
+// the singleton on globalThis so bootstrap (instrumentation) and consumers
+// (scanner, admin routes) share the same monitors.
+type ShadowState = {
+  monitors: Map<Horizon, ShadowMonitor>;
+  bootstrapped: boolean;
+};
+const globalShadow = globalThis as unknown as { __shadowState?: ShadowState };
+const state: ShadowState = (globalShadow.__shadowState ??= {
+  monitors: new Map(),
+  bootstrapped: false,
+});
+const monitors = state.monitors;
 
 export function bootstrapShadowMonitors(): void {
-  if (bootstrapped) return;
-  bootstrapped = true;
+  if (state.bootstrapped) return;
+  state.bootstrapped = true;
   if (process.env.SHADOW_ENABLED !== "true") {
     console.log("[shadow] SHADOW_ENABLED != 'true'; monitors disabled");
     return;
   }
+  console.log(`[shadow] bootstrapping monitors: ${HORIZONS.join(", ")}`);
   for (const h of HORIZONS) {
     const m = new ShadowMonitor(h);
     monitors.set(h, m);
