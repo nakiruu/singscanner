@@ -233,8 +233,13 @@ export function ShadowClient() {
                     Force re-seed
                   </button>
                 </div>
-                <div className="mt-3 font-mono text-[10px] text-on-surface-variant">
-                  historical daily δ: {data.historicalDailyDelta.length} days recorded
+                <div className="mt-3">
+                  <div className="font-mono text-[10px] text-on-surface-variant">
+                    historical daily δ: {data.historicalDailyDelta.length} days recorded
+                  </div>
+                  {data.historicalDailyDelta.length > 0 && (
+                    <DailyDeltaChart rows={data.historicalDailyDelta} />
+                  )}
                 </div>
               </CardContent>
             </Card>
@@ -242,6 +247,48 @@ export function ShadowClient() {
         )}
       </div>
     </main>
+  );
+}
+
+function DailyDeltaChart({
+  rows,
+}: {
+  rows: Array<{ day: string; mean_delta_bps: number; n: number }>;
+}) {
+  const maxAbs = Math.max(...rows.map((r) => Math.abs(r.mean_delta_bps)), 1);
+  return (
+    <div className="mt-2 flex h-16 items-center gap-px overflow-hidden">
+      {rows.map((r) => {
+        const ratio = Math.abs(r.mean_delta_bps) / maxAbs;
+        const isPos = r.mean_delta_bps >= 0;
+        const barHeightPct = Math.round(ratio * 100);
+        return (
+          <div
+            key={r.day}
+            className="flex flex-1 flex-col items-center justify-center h-full"
+          >
+            <div className="flex h-1/2 w-full items-end justify-center">
+              {isPos && (
+                <div
+                  className="w-full min-w-[1px] bg-success opacity-80"
+                  style={{ height: `${barHeightPct}%` }}
+                  title={`${r.day}: ${r.mean_delta_bps}bps (n=${r.n})`}
+                />
+              )}
+            </div>
+            <div className="flex h-1/2 w-full items-start justify-center">
+              {!isPos && (
+                <div
+                  className="w-full min-w-[1px] bg-error opacity-80"
+                  style={{ height: `${barHeightPct}%` }}
+                  title={`${r.day}: ${r.mean_delta_bps}bps (n=${r.n})`}
+                />
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
