@@ -45,6 +45,7 @@ import { fetchFundamentals, type FundamentalRow } from "@/lib/ml/fundamentals-cl
 import { buildMockSnapshot } from "./mock";
 import { insertSnapshot, insertScanRows, isClickhouseEnabled } from "@/lib/data/clickhouse";
 import { recordScanDuration } from "@/lib/data/metrics";
+import { shadowMonitorAsync } from "@/lib/shadow";
 
 const REFRESH_MS = Math.max(5_000, Number(process.env.SCANNER_INTERVAL_S ?? "0") * 1000 || 15_000);
 const MAX_SYMBOLS = Math.max(10, Number(process.env.SCANNER_MAX_SYMBOLS ?? "600"));
@@ -527,6 +528,7 @@ export async function getLatestSnapshot(horizonSpec?: string): Promise<ScanSnaps
     entry.ts = Date.now();
     entry.inflight = null;
     persistSnapshotAsync(snap);
+    shadowMonitorAsync(snap);
     return snap;
   }).catch((err) => {
     entry.inflight = null;
