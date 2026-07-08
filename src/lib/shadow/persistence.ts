@@ -19,6 +19,11 @@ function getClient(): ClickHouseClient | null {
       username: process.env.CLICKHOUSE_USER ?? "default",
       password: process.env.CLICKHOUSE_PASSWORD ?? "",
       database: process.env.CLICKHOUSE_DB ?? "default",
+      clickhouse_settings: {
+        // ISO-8601 timestamps ("...T...Z") need best_effort; the default
+        // basic parser rejects them and every insert fails silently.
+        date_time_input_format: "best_effort",
+      },
     });
     return client;
   } catch (err) {
