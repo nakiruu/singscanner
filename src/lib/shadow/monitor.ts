@@ -18,6 +18,7 @@ import {
 } from "./features";
 import type { ScanSnapshot, ScanRow } from "@/lib/engine/types";
 import { queryBars } from "@/lib/data/clickhouse";
+import { recordError } from "@/lib/data/metrics";
 
 // Trading-day approximations for horizon → resolution window.
 // 6.5h × 60min × 60s × 1000ms per trading day.
@@ -61,51 +62,58 @@ export class ShadowMonitor {
   // -- Main observe --------------------------------------------------------
 
   async observe(snap: ScanSnapshot): Promise<void> {
-    if (snap.horizon !== this.horizon) return;
-    const session = sessionBucketNow();
-    const cashFraction = Math.max(0, Math.min(1, snap.cashWeight ?? 0.5));
+    try {
+      if (snap.horizon !== this.horizon) return;
+      const session = sessionBucketNow();
+      const cashFraction = Math.max(0, Math.min(1, snap.cashWeight ?? 0.5));
 
-    for (const row of snap.rows) {
-      const features = extractFeatures(row, { cashFraction, tickerEdge: 0 });
-      const bucket = bucketKey(row.role, session);
+      for (const row of snap.rows) {
+        const features = extractFeatures(row, { cashFraction, tickerEdge: 0 });
+        const bucket = bucketKey(row.role, session);
 
-      // Fallback = baseline's model_edge; the static-perturbation baseline
-      // for the dynamic challenger is roleEdge × (friction + FRICTION_BUMP),
-      // but we let the dynamic predict handle it.
-      const fallbackBps = row.modelEdge;
-      const { estimate: chalEdge } = this.challenger.predict(bucket, features, fallbackBps);
+        // Fallback = baseline's model_edge; the static-perturbation baseline
+        // for the dynamic challenger is roleEdge × (friction + FRICTION_BUMP),
+        // but we let the dynamic predict handle it.
+        const fallbackBps = row.modelEdge;
+        const { estimate: chalEdge } = this.challenger.predict(bucket, features, fallbackBps);
 
-      const edgeDelta = chalEdge - row.modelEdge;
-      const chalNet = row.net + edgeDelta;
-      const chalDecision = deriveChallengerDecision(row, chalNet);
+        const edgeDelta = chalEdge - row.modelEdge;
+        const chalNet = row.net + edgeDelta;
+        const chalDecision = deriveChallengerDecision(row, chalNet);
 
-      const netDiverges = Math.abs(chalNet - row.net) > NET_DIVERGENCE_BPS;
-      if (row.decision === chalDecision && !netDiverges) continue;
+        const netDiverges = Math.abs(chalNet - row.net) > NET_DIVERGENCE_BPS;
+        if (row.decision === chalDecision && !netDiverges) continue;
 
-      const dedupKey = `${row.symbol}|${row.decision}|${chalDecision}`;
-      if (this.openKeys.has(dedupKey)) continue;
-      this.openKeys.add(dedupKey);
+        const dedupKey = `${row.symbol}|${row.decision}|${chalDecision}`;
+        if (this.openKeys.has(dedupKey)) continue;
+        this.openKeys.add(dedupKey);
 
-      const pending: PendingRow = {
-        id: newId(),
-        horizon: this.horizon,
-        symbol: row.symbol,
-        submittedAt: new Date().toISOString(),
-        baselineDecision: row.decision,
-        challengerDecision: chalDecision,
-        baselineNetBps: row.net,
-        challengerNetBps: chalNet,
-        entryPrice: row.price,
-        bucket,
-        features,
-        source: "live",
-      };
-      await insertPending(pending);
+        const pending: PendingRow = {
+          id: newId(),
+          horizon: this.horizon,
+          symbol: row.symbol,
+          submittedAt: new Date().toISOString(),
+          baselineDecision: row.decision,
+          challengerDecision: chalDecision,
+          baselineNetBps: row.net,
+          challengerNetBps: chalNet,
+          entryPrice: row.price,
+          bucket,
+          features,
+          source: "live",
+        };
+        await insertPending(pending);
+      }
+
+      void this.resolvePending();
+      // Keep FRICTION_BUMP referenced so the constant survives the lint pass.
+      void FRICTION_BUMP;
+    } catch (err) {
+      recordError({
+        kind: "ch",
+        message: `ShadowMonitor.observe: ${(err as Error)?.message}`,
+      });
     }
-
-    void this.resolvePending();
-    // Keep FRICTION_BUMP referenced so the constant survives the lint pass.
-    void FRICTION_BUMP;
   }
 
   // -- Resolution ----------------------------------------------------------
