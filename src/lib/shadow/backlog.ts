@@ -113,9 +113,6 @@ export async function runHistoricalBacklog(
         const chalNet = row.net + (chalEdge - row.modelEdge);
         const chalDecision = deriveDecision(row, chalNet);
 
-        const netDiverges = Math.abs(chalNet - row.net) > NET_DIVERGENCE_BPS;
-        if (row.decision === chalDecision && !netDiverges) continue;
-
         // Forward price = close at dayIdx + horizonDays.
         const horizonTradingDays = Math.round(HORIZON_RESOLUTION_MS[horizon] / (6.5 * 60 * 60 * 1000));
         const forwardIdx = dayIdx + horizonTradingDays;
@@ -128,6 +125,15 @@ export async function runHistoricalBacklog(
         const baselineValueBps = valueOf(row.decision, realizedBps);
         const challengerValueBps = valueOf(chalDecision, realizedBps);
         const deltaBps = challengerValueBps - baselineValueBps;
+
+        // Train on EVERY resolved row, not just divergent ones. A fresh
+        // challenger predicts exactly the baseline fallback, so gating
+        // updates on divergence would deadlock cold start: never diverges →
+        // never learns → 0 samples forever.
+        challenger.update(bucket, features, challengerValueBps);
+
+        const netDiverges = Math.abs(chalNet - row.net) > NET_DIVERGENCE_BPS;
+        if (row.decision === chalDecision && !netDiverges) continue;
 
         await insertResolved({
           id: newId(),
@@ -144,7 +150,6 @@ export async function runHistoricalBacklog(
           source: "historical",
           clean: 1,
         });
-        challenger.update(bucket, features, challengerValueBps);
         progress.samplesAdded += 1;
       }
       progress.daysProcessed += 1;
