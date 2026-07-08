@@ -206,8 +206,11 @@ export async function queryResolvedForPosterior(
 ): Promise<Array<{ delta_bps: number }>> {
   const c = getClient();
   if (!c) return [];
-  const sourceClause =
-    source === "all" ? "" : `AND source = '${source === "live" ? "live" : "historical"}'`;
+  const sourceClause = source === "all" ? "" : "AND source = {source:String}";
+  const query_params: { horizon: string; source?: string } = { horizon };
+  if (source !== "all") {
+    query_params.source = source;
+  }
   try {
     const rs = await c.query({
       query: `
@@ -215,7 +218,7 @@ export async function queryResolvedForPosterior(
         FROM shadow_resolved
         WHERE horizon = {horizon:String} AND clean = 1 ${sourceClause}
       `,
-      query_params: { horizon },
+      query_params,
       format: "JSONEachRow",
     });
     return (await rs.json()) as Array<{ delta_bps: number }>;
