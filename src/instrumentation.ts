@@ -6,5 +6,7 @@ export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     const { bootstrapShadowMonitors } = await import("@/lib/shadow");
     bootstrapShadowMonitors();
+    const { bootstrapTraders } = await import("@/lib/trader");
+    bootstrapTraders();
   }
 }
