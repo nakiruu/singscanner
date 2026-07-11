@@ -438,13 +438,185 @@ export class TraderRunner {
     }
   }
 
-  // §2 steps 7-8. Implemented in Task 7.
+  // §2 steps 7-8: BUYS then ROTATIONS. Returns entry count for cycle stats.
   private async buyAndRotate(
     rows: ScanRow[], bySym: Map<string, ScanRow>,
     session: TraderSession, etHour: number, ext: boolean,
   ): Promise<{ entries: number }> {
-    void rows; void bySym; void session; void etHour; void ext;
-    void sizePosition; void convictionForRank; void scoreRotations;
-    return { entries: 0 };
+    // Session gates (§2 step 7).
+    if (session === "afterhours") return { entries: 0 };
+    if (session === "premarket" && etHour < this.cfg.sessionSettings.premarketMinHour) {
+      return { entries: 0 };
+    }
+
+    const s = this.cfg.settings;
+    const now = Date.now();
+    const openBuySyms = new Set(
+      this.openOrders.filter((o) => o.side === "buy").map((o) => o.symbol),
+    );
+
+    // Starred BUY rows, not held/pending, valid levels, past reversal cooldown.
+    const candidates = rows
+      .filter((r) =>
+        r.decision === "BUY" && r.star &&
+        !this.positions.has(r.symbol) &&
+        !this.pendingEntries.has(r.symbol) &&
+        !openBuySyms.has(r.symbol) &&
+        r.price > 0 && r.stopPx > 0 && r.takeProfitLimitPx > 0 &&
+        now - (this.lastExit.get(r.symbol) ?? 0) >= s.reversalCooldownS * 1000,
+      )
+      .sort((a, b) => b.net - a.net);
+
+    let entries = 0;
+
+    // ---- ROTATIONS first (RTH only): freed cash funds the incoming buy ----
+    if (!ext && candidates.length > 0) {
+      let rotations = 0;
+      const usedTargets = new Set<string>();
+      const heldRows = [...this.positions.keys()]
+        .map((sym) => bySym.get(sym))
+        .filter((r): r is ScanRow => r !== undefined)
+        .sort((a, b) => a.net - b.net); // weakest first
+
+      for (const heldRow of heldRows) {
+        if (rotations >= s.maxRotationsPerCycle) break;
+        const sym = heldRow.symbol;
+        const pos = this.positions.get(sym);
+        if (!pos) continue;
+        if (heldRow.role === "primary" || heldRow.role === "secondary") continue;
+        if (now - (this.closing.get(sym) ?? 0) < CLOSING_TOMBSTONE_MS) continue;
+        if (now - (this.entryTs.get(sym) ?? 0) < s.rotationMinAgeS * 1000) continue;
+        const { result } = this.sellFor(heldRow, pos);
+        if (result.decision !== "HOLD") continue; // SELL path already handled it
+
+        const targets = candidates
+          .filter((c) => !usedTargets.has(c.symbol))
+          .map((c) => ({
+            symbol: c.symbol, role: c.role, netBps: c.net, entryCostBps: c.cost,
+          }));
+        if (targets.length === 0) break;
+        const best = scoreRotations(
+          {
+            symbol: sym, role: heldRow.role,
+            netBps: Math.max(0, heldRow.net),
+            modelEdgeBps: heldRow.modelEdge,
+            exitCostBps: heldRow.cExit,
+          },
+          targets,
+        )[0];
+        if (!best || !best.cleared) continue;
+        const cand = bySym.get(best.toSymbol);
+        if (!cand) continue;
+
+        // §65 package budget: freed cash after modeled exit cost + spare cash
+        // above the floor.
+        const freedCash = pos.qty * heldRow.price * (1 - Math.max(0, heldRow.cExit) / 10_000);
+        const spareCash = Math.max(0, this.account.buyingPower - this.account.equity * s.cashFloorPct);
+        const budget = freedCash + spareCash;
+        const conviction = (s.minConviction + s.maxConviction) / 2;
+        const qty = sizePosition({
+          equity: this.account.equity, buyingPower: this.account.buyingPower,
+          price: cand.price, stop: cand.stopPx, conviction,
+          cashAvailable: budget, settings: s,
+        });
+        if (qty < 1) continue;
+        const br = sanitizeBracket(cand.price, cand.stopPx, cand.takeProfitLimitPx);
+        if (br === null) continue;
+
+        try {
+          const closed = await this.cfg.broker.closePosition(sym);
+          if (closed === null) continue;
+          this.closing.set(sym, now);
+          this.lastExit.set(sym, now);
+          this.logOrder({
+            symbol: sym, side: "sell", order_type: "close", qty: pos.qty,
+            reason: `rotate-out→${cand.symbol}`, alpaca_order_id: closed.orderId,
+            status: "submitted", expected_price: heldRow.price,
+          });
+          const o = await this.cfg.broker.submitBracket({
+            symbol: cand.symbol, qty, stopPrice: br.stop,
+            stopLimitPrice: roundPrice(Math.min(cand.stopLimitPx, br.stop)),
+            takeProfitLimit: br.target,
+          });
+          this.pendingEntries.set(cand.symbol, {
+            targetQty: qty, expectedPrice: cand.price, orderId: o.orderId,
+            submittedAt: now, rotation: true,
+          });
+          this.entryTs.set(cand.symbol, now);
+          usedTargets.add(cand.symbol);
+          this.logOrder({
+            symbol: cand.symbol, side: "buy", order_type: "bracket", qty,
+            reason: `rotate-in←${sym}`, alpaca_order_id: o.orderId,
+            status: "submitted", stop_price: br.stop, target_price: br.target,
+            expected_price: cand.price,
+          });
+          rotations++;
+          entries++;
+        } catch (err) {
+          recordError({ kind: "alpaca", message: `[trader:${this.cfg.horizon}] rotation ${sym}→${cand.symbol} failed: ${err}` });
+        }
+      }
+      // Rotated-in symbols can't also be fresh entries this cycle.
+      for (const t of usedTargets) {
+        const idx = candidates.findIndex((c) => c.symbol === t);
+        if (idx >= 0) candidates.splice(idx, 1);
+      }
+    }
+
+    // ---- BUYS ----
+    const n = candidates.length;
+    let bought = 0;
+    for (let i = 0; i < n; i++) {
+      if (bought >= s.maxEntriesPerCycle) break;
+      if (this.positions.size + this.pendingEntries.size >= s.maxPositions) break;
+      const r = candidates[i];
+      const br = sanitizeBracket(r.price, r.stopPx, r.takeProfitLimitPx);
+      if (br === null) continue;
+      const conviction = convictionForRank(i + 1, n, s);
+      const qty = sizePosition({
+        equity: this.account.equity, buyingPower: this.account.buyingPower,
+        price: r.price, stop: br.stop, conviction, settings: s,
+      });
+      if (qty < 1) continue;
+
+      try {
+        let orderId: string;
+        let orderType: "bracket" | "limit";
+        if (!ext) {
+          const o = await this.cfg.broker.submitBracket({
+            symbol: r.symbol, qty, stopPrice: br.stop,
+            stopLimitPrice: roundPrice(Math.min(r.stopLimitPx, br.stop)),
+            takeProfitLimit: br.target,
+          });
+          orderId = o.orderId;
+          orderType = "bracket";
+        } else {
+          // Premarket ≥ min hour: extended marketable limit buy; exit legs
+          // re-attach at the first regular-hours cycle.
+          const limit = roundPrice(r.price * (1 + this.cfg.extendedSettings.limitSlip));
+          const o = await this.cfg.broker.submitLimit({
+            symbol: r.symbol, side: "buy", qty, limitPrice: limit, extended: true,
+          });
+          orderId = o.orderId;
+          orderType = "limit";
+        }
+        this.pendingEntries.set(r.symbol, {
+          targetQty: qty, expectedPrice: r.price, orderId,
+          submittedAt: now, rotation: false,
+        });
+        this.entryTs.set(r.symbol, now);
+        this.logOrder({
+          symbol: r.symbol, side: "buy", order_type: orderType, qty,
+          reason: "star-entry", alpaca_order_id: orderId, status: "submitted",
+          stop_price: br.stop, target_price: br.target, expected_price: r.price,
+        });
+        bought++;
+        entries++;
+      } catch (err) {
+        recordError({ kind: "alpaca", message: `[trader:${this.cfg.horizon}] BUY ${r.symbol} failed: ${err}` });
+      }
+    }
+
+    return { entries };
   }
 }
