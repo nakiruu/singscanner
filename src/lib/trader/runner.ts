@@ -63,7 +63,7 @@ interface TrackedEntry {
   targetQty: number;
   expectedPrice: number;
   orderId: string;
-  submittedAt: number;
+  sessionPhase: "regular" | "extended";
   rotation: boolean;
 }
 
@@ -192,9 +192,11 @@ export class TraderRunner {
     this.cycling = true;
     const start = Date.now();
     let entries = 0, exits = 0, errors = 0;
+    let cycleRan = false;
     try {
       const { session, etHour } = etSession();
       if (session === "closed") return;
+      cycleRan = true;
 
       const snap = await getLatestSnapshot(this.cfg.horizon);
       if (isStale(snap.generatedAt, STALE_SCAN_MS)) {
@@ -233,7 +235,7 @@ export class TraderRunner {
       const msg = err instanceof BrokerError ? err.message : String(err);
       recordError({ kind: "alpaca", message: `[trader:${this.cfg.horizon}] cycle failed: ${msg}` });
     } finally {
-      this.lastCycleAt = Date.now();
+      if (cycleRan) this.lastCycleAt = Date.now();
       recordTraderCycle(this.cfg.horizon, Date.now() - start, entries, exits, errors);
       this.cycling = false;
       this.scheduleNext();
@@ -246,6 +248,9 @@ export class TraderRunner {
     let exits = 0;
     if (this.prevPositions === null) {
       this.pendingEntries.clear();
+      for (const sym of this.positions.keys()) {
+        if (!this.entryTs.has(sym)) this.entryTs.set(sym, Date.now());
+      }
       return 0;
     }
     const equity = Math.max(1, this.account.equity);
@@ -258,7 +263,7 @@ export class TraderRunner {
         const partial = tracked !== undefined && pos.qty < tracked.targetQty;
         if (tracked && tracked.expectedPrice > 0 && pos.avgPrice > 0) {
           const slip = ((pos.avgPrice - tracked.expectedPrice) / tracked.expectedPrice) * 10_000;
-          recordSlippage(sym, "buy", "regular", slip);
+          recordSlippage(sym, "buy", tracked.sessionPhase, slip);
           this.logOrder({
             symbol: sym, side: "buy", order_type: "bracket",
             qty: pos.qty, reason: partial ? "partial-fill" : "fill",
@@ -540,7 +545,7 @@ export class TraderRunner {
           });
           this.pendingEntries.set(cand.symbol, {
             targetQty: qty, expectedPrice: cand.price, orderId: o.orderId,
-            submittedAt: now, rotation: true,
+            sessionPhase: ext ? "extended" : "regular", rotation: true,
           });
           this.entryTs.set(cand.symbol, now);
           usedTargets.add(cand.symbol);
@@ -602,7 +607,7 @@ export class TraderRunner {
         }
         this.pendingEntries.set(r.symbol, {
           targetQty: qty, expectedPrice: r.price, orderId,
-          submittedAt: now, rotation: false,
+          sessionPhase: ext ? "extended" : "regular", rotation: false,
         });
         this.entryTs.set(r.symbol, now);
         this.logOrder({

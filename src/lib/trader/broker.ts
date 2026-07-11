@@ -50,7 +50,6 @@ export interface BracketArgs {
   stopPrice: number;
   stopLimitPrice: number;
   takeProfitLimit: number;
-  extended?: boolean;         // only honored for limit entries
 }
 
 export interface OcoArgs {
