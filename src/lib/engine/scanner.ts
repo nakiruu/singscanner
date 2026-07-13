@@ -44,7 +44,7 @@ import { fetchActiveUniverse, type UniverseEntry } from "@/lib/data/universe";
 import { fetchFundamentals, type FundamentalRow } from "@/lib/ml/fundamentals-client";
 import { buildMockSnapshot } from "./mock";
 import { insertSnapshot, insertScanRows, isClickhouseEnabled } from "@/lib/data/clickhouse";
-import { recordScanDuration, getActionMemoryBps, getExpectedSlippageBps } from "@/lib/data/metrics";
+import { recordScanDuration } from "@/lib/data/metrics";
 import { shadowMonitorAsync } from "@/lib/shadow";
 
 const REFRESH_MS = Math.max(5_000, Number(process.env.SCANNER_INTERVAL_S ?? "0") * 1000 || 15_000);
@@ -318,7 +318,7 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       friction,
       frictionFloor: calib.frictionFloor,
       frictionCeiling: calib.frictionCeiling,
-      spreadBps: p.spreadBps + getExpectedSlippageBps(p.symbol, "buy", clockState.phase),
+      spreadBps: p.spreadBps,
       volPctPerBar: p.feats.vol_pct_per_bar,
       notional: 10_000,                              // TODO: per-user sizing
       barDollarVol: p.price * p.dailyVolume,
@@ -331,7 +331,6 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       minHurdle: calib.minHurdle,
       isHeld: false,
       isMember,
-      actionMemoryBps: getActionMemoryBps(p.symbol, horizonMin),
     });
 
     return { role, roleEdge, isMember, g };
@@ -371,7 +370,7 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       friction,
       frictionFloor: calib.frictionFloor,
       frictionCeiling: calib.frictionCeiling,
-      spreadBps: p.spreadBps + getExpectedSlippageBps(p.symbol, "buy", clockState.phase),
+      spreadBps: p.spreadBps,
       volPctPerBar: p.feats.vol_pct_per_bar,
       notional: 10_000,
       barDollarVol: p.price * p.dailyVolume,
@@ -385,7 +384,6 @@ async function buildLiveSnapshot(horizonSpec: string): Promise<ScanSnapshot> {
       isHeld: false,
       isMember,
       concentrationBps,
-      actionMemoryBps: getActionMemoryBps(p.symbol, horizonMin),
     });
 
     // Multi-horizon fair-value ladder (§7). Same forecast, four horizons.

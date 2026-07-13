@@ -16,31 +16,19 @@ export function PipelineHealthSection({ pipeline }: { pipeline: Pipeline | null 
         {!pipeline ? (
           <div className="font-mono text-[11px] text-on-surface-variant">loading…</div>
         ) : (
-          <>
-            <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-              <Stat label="Alpaca" value={`${(pipeline.alpacaSuccess1h * 100).toFixed(1)}%`} sub="1h success" />
-              <Stat
-                label="Cache hit"
-                value={pipeline.fundamentalsCacheHit == null
-                  ? "n/a"
-                  : `${(pipeline.fundamentalsCacheHit * 100).toFixed(0)}%`}
-                sub="fundamentals"
-              />
-              <Stat label="CH bars" value={fmtCount(pipeline.chBars24h)} sub="/24h" />
-              <Stat label="CH rows" value={fmtCount(pipeline.chScanRows24h)} sub="scan_rows /24h" />
-              <Stat label="Scan p95" value={`${pipeline.scanP95Ms.toFixed(0)}ms`} sub="build snapshot" />
-            </div>
-            <div className="mt-4 grid grid-cols-3 gap-4">
-              {pipeline.trader.map((t) => (
-                <Stat
-                  key={t.horizon}
-                  label={`Trader ${t.horizon}`}
-                  value={t.lastCycleAgeS == null ? "off" : `${t.lastCycleAgeS}s`}
-                  sub={`${t.entries1h}in ${t.exits1h}out ${t.errors1h}err /1h`}
-                />
-              ))}
-            </div>
-          </>
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            <Stat label="Alpaca" value={`${(pipeline.alpacaSuccess1h * 100).toFixed(1)}%`} sub="1h success" />
+            <Stat
+              label="Cache hit"
+              value={pipeline.fundamentalsCacheHit == null
+                ? "n/a"
+                : `${(pipeline.fundamentalsCacheHit * 100).toFixed(0)}%`}
+              sub="fundamentals"
+            />
+            <Stat label="CH bars" value={fmtCount(pipeline.chBars24h)} sub="/24h" />
+            <Stat label="CH rows" value={fmtCount(pipeline.chScanRows24h)} sub="scan_rows /24h" />
+            <Stat label="Scan p95" value={`${pipeline.scanP95Ms.toFixed(0)}ms`} sub="build snapshot" />
+          </div>
         )}
       </CardContent>
     </Card>

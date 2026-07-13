@@ -5,7 +5,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { getAlpacaSuccessRate, getScanLatencyP95, getTraderCycleStats } from "@/lib/data/metrics";
+import { getAlpacaSuccessRate, getScanLatencyP95 } from "@/lib/data/metrics";
 import { createClient } from "@clickhouse/client";
 
 export const dynamic = "force-dynamic";
@@ -29,13 +29,6 @@ export interface AdminSummary {
     chBars24h: number;
     chScanRows24h: number;
     scanP95Ms: number;
-    trader: Array<{
-      horizon: string;
-      lastCycleAgeS: number | null;
-      entries1h: number;
-      exits1h: number;
-      errors1h: number;
-    }>;
   };
   business: {
     totalUsers: number;
@@ -141,16 +134,6 @@ async function fetchPipeline() {
     chBars24h: Number(barsRow?.n ?? 0),
     chScanRows24h: Number(scanRow?.n ?? 0),
     scanP95Ms: getScanLatencyP95(),
-    trader: ["3d", "5d", "10d"].map((horizon) => {
-      const s = getTraderCycleStats(horizon);
-      return {
-        horizon,
-        lastCycleAgeS: s.lastCycleAt == null ? null : Math.round((Date.now() - s.lastCycleAt) / 1000),
-        entries1h: s.entries1h,
-        exits1h: s.exits1h,
-        errors1h: s.errors1h,
-      };
-    }),
   };
 }
 
