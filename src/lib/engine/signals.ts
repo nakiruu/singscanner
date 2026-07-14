@@ -4,6 +4,28 @@
 
 import { clamp, mean, percentileRank } from "./stats";
 import type { SignalScores } from "./forecast";
+import { percentileBand, clip } from "./winsorize";
+
+// Cross-sectional signal winsorization at 1%/99%. Prevents a handful of
+// extreme raw values (earnings gaps, restatements, micro-denominator ratios)
+// from compressing the middle of the distribution during percentile ranking.
+// Green, Hand & Zhang (2017 RFS) treat this as step 2 of the canonical
+// 5-step signal pipeline. Applied inside sortedFinite* so every family
+// consumes clipped universes automatically.
+const SIGNAL_WINSORIZE_ENABLED = process.env.SIGNAL_WINSORIZE === "on";
+const SIGNAL_WINSORIZE_LO_PCT = 1;
+const SIGNAL_WINSORIZE_HI_PCT = 99;
+const SIGNAL_WINSORIZE_MIN_N = 20;
+
+// In-place tail clip on an already-sorted array. Preserves sort order
+// because the tails collapse to boundary values (many repeated ends).
+function applyTailClip(sorted: number[]): void {
+  if (!SIGNAL_WINSORIZE_ENABLED || sorted.length < SIGNAL_WINSORIZE_MIN_N) return;
+  const { lo, hi } = percentileBand(sorted, SIGNAL_WINSORIZE_LO_PCT, SIGNAL_WINSORIZE_HI_PCT);
+  for (let i = 0; i < sorted.length; i++) {
+    sorted[i] = clip(sorted[i], lo, hi);
+  }
+}
 
 // Raw per-symbol inputs the families consume.
 // Fundamentals are nullable: we treat null as "missing" everywhere.
@@ -57,10 +79,12 @@ interface PreparedMomentum {
 }
 
 // Build a sorted array (ascending) from a number iterable, skipping non-finite.
+// Optionally winsorizes tails at 1%/99% when SIGNAL_WINSORIZE=on.
 function sortedFiniteAsc(xs: Iterable<number>): number[] {
   const arr: number[] = [];
   for (const x of xs) if (Number.isFinite(x)) arr.push(x);
   arr.sort((a, b) => a - b);
+  applyTailClip(arr);
   return arr;
 }
 
@@ -69,6 +93,7 @@ function sortedFiniteAscNullable(xs: Iterable<number | null>): number[] {
   const arr: number[] = [];
   for (const x of xs) if (x != null && Number.isFinite(x)) arr.push(x);
   arr.sort((a, b) => a - b);
+  applyTailClip(arr);
   return arr;
 }
 
