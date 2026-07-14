@@ -51,8 +51,8 @@ export async function GET() {
           : "not-started";
       return {
         horizon: h,
-        posterior_live: computePosterior(liveRows),
-        posterior_all: computePosterior(allRows),
+        posterior_live: computePosterior(liveRows, {}, h),
+        posterior_all: computePosterior(allRows, {}, h),
         backlogStatus: status,
         backlogSamples,
         pendingCount: getMonitor(h) ? 0 : 0, // placeholder; real pending count computed in detail route

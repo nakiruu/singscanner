@@ -37,9 +37,21 @@ const DEFAULT_OPTS: Required<PosteriorOpts> = {
   minPosteriorDelta: envNum("SHADOW_MIN_POSTERIOR_DELTA_BPS", 0),
 };
 
+// Label-overlap coefficients per horizon (Grinold & Kahn 2000 ch. 5).
+// Forward-return windows overlap between consecutive scans; the effective
+// number of independent observations is n / (1 + 2·ρ). Values are practitioner
+// defaults; refine against realized `shadow_resolved` correlations once
+// the corpus is large enough.
+const RHO_LABEL_BY_HORIZON: Record<string, number> = {
+  "3d": 0.3,
+  "5d": 0.4,
+  "10d": 0.5,
+};
+
 export function computePosterior(
   rows: ReadonlyArray<{ delta_bps: number }>,
   opts: PosteriorOpts = {},
+  horizon?: "3d" | "5d" | "10d",
 ): Posterior {
   const o = { ...DEFAULT_OPTS, ...opts };
   const n = rows.length;
@@ -68,9 +80,12 @@ export function computePosterior(
   const postVar = sampleVar / (o.kappa0 + n);
   const deltaSe = Math.sqrt(Math.max(0, postVar));
 
-  // n_eff placeholder: independent-sample assumption. Label-overlap correction
-  // (n_eff = n / (1 + 2·ρ_label)) arrives in the P1 pass.
-  const nEff = n;
+  // Effective sample size under label overlap. Independent-sample assumption
+  // in the conjugate posterior is violated when forward-return windows overlap.
+  // Downstream DSR + promotion-guard consume this to avoid over-confidence on
+  // longer horizons.
+  const rhoLabel = horizon != null ? (RHO_LABEL_BY_HORIZON[horizon] ?? 0) : 0;
+  const nEff = rhoLabel > 0 ? n / (1 + 2 * rhoLabel) : n;
 
   const promotable =
     n >= o.minCleanRows && posShare >= o.minPositiveShare && deltaPost > o.minPosteriorDelta;

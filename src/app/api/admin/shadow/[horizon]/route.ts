@@ -54,8 +54,8 @@ export async function GET(
 
   const detail: ShadowDetail = {
     horizon: h,
-    posterior_live: computePosterior(liveRows),
-    posterior_all: computePosterior(allRows),
+    posterior_live: computePosterior(liveRows, {}, h),
+    posterior_all: computePosterior(allRows, {}, h),
     buckets,
     pending: pending.map((p) => ({
       symbol: p.symbol,
