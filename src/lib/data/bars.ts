@@ -373,10 +373,23 @@ function olsSlope(ys: number[]): number | null {
   return num / den;
 }
 
+// Roll (1984 JoF) bid-ask bounce correction on close-to-close variance.
+// Bar closes alternate between bid and ask, inducing spurious negative
+// first-order autocorrelation. Downstream volAnn is currently biased upward
+// on wide-spread names, inflating C_side inside gate.ts. Applied only when
+// SIGNAL_BOUNCE_CORRECTION=on AND the caller passes a spread.
+const BOUNCE_CORRECTION_ENABLED = process.env.SIGNAL_BOUNCE_CORRECTION === "on";
+
+export interface BarFeaturesOpts {
+  // Typical spread in bps for the bounce correction. Omit or set 0 to skip.
+  spreadBps?: number;
+}
+
 export function computeBarFeatures(
   dailyBars: DailyBar[],
   spyDailyBars: DailyBar[] | null,
   intradayBars: IntradayBar[] | null,
+  opts: BarFeaturesOpts = {},
 ): BarFeatures {
   const empty: BarFeatures = {
     ret_3d: null,
@@ -454,13 +467,19 @@ export function computeBarFeatures(
   }
 
   // realized_vol_ann — data.py:150-154 (stdev of last 20 returns * sqrt(252))
+  // Optionally apply Roll (1984 JoF) bid-ask bounce correction when a typical
+  // spread is provided: Var(r_corrected) = Var(r) - (s/10000)² / 4.
   let realizedVolAnn: number | null = null;
   if (rets.length >= 20) {
     const recent = rets.slice(-20);
     const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
     let varSum = 0;
     for (const r of recent) varSum += (r - mean) ** 2;
-    const variance = varSum / Math.max(1, recent.length - 1);
+    let variance = varSum / Math.max(1, recent.length - 1);
+    if (BOUNCE_CORRECTION_ENABLED && opts.spreadBps != null && opts.spreadBps > 0) {
+      const s = opts.spreadBps / 10_000;
+      variance = Math.max(0, variance - (s * s) / 4);
+    }
     realizedVolAnn = Math.sqrt(variance) * Math.sqrt(252);
   }
 
