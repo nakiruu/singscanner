@@ -11,6 +11,13 @@ import {
   type BucketRow,
 } from "./persistence";
 import { N_FEATURES } from "./features";
+import { clip } from "@/lib/engine/winsorize";
+import {
+  emptyFeatureStats,
+  updateFeatureStats,
+  standardizeFeatures,
+  type FeatureStats,
+} from "./standardization";
 
 const PRIOR_STRENGTH_KAPPA = 20.0;
 const RIDGE_LAMBDA = 5.0;
@@ -20,6 +27,24 @@ const DECAY_FACTOR = 0.9;
 
 // Debounce window: coalesce many updates into one flush per bucket.
 const FLUSH_DEBOUNCE_MS = Number(process.env.SHADOW_BUCKET_FLUSH_DEBOUNCE_MS ?? "30000");
+
+// Fixed-band winsorization on the update inputs. Wide enough to preserve
+// genuine outcomes; narrow enough to prevent a single earnings-gap event
+// from shifting ridge coefficients ~30% (López de Prado 2020, ch. 3). The
+// per-bucket MAD-based variant will replace these once the standardization
+// module maintains rolling stats. Behind SHADOW_WINSORIZE=1 to allow a
+// clean A/B via the shadow monitor.
+const WINSORIZE_ENABLED = process.env.SHADOW_WINSORIZE === "1";
+const REALIZED_BPS_CAP = 1000; // ±10% single-observation cap
+const FEATURE_MAGNITUDE_CAP = 5; // safe against exotic feature scales
+
+// Feature standardization (per-bucket MAD z-scoring). Ridge is not scale-
+// invariant, so this is the single largest fit-quality lift once wired
+// (Hoerl & Kennard 1970; ESL ch. 3.4). MIGRATION HAZARD: enabling this on a
+// running system with pre-existing buckets in `shadow_buckets` will
+// mis-interpret the persisted xtx/xty (built on raw scale). Rebuild buckets
+// before flipping the flag globally.
+const STANDARDIZATION_ENABLED = process.env.SHADOW_FEATURE_STANDARDIZATION === "1";
 
 export interface PredictDiag {
   bucket: string;
@@ -38,6 +63,12 @@ interface BucketState {
   xtx: number[];   // length 64, row-major 8×8
   xty: number[];   // length 8
   dirty: boolean;
+  // Per-bucket rolling feature stats for MAD-based standardization. Populated
+  // even when STANDARDIZATION_ENABLED is off so the reservoir warms in the
+  // background; only READ from when the flag is on. Not persisted to CH
+  // (rebuilt on process restart via warmup — bucket rebuild required for
+  // full standardization semantics).
+  stats: FeatureStats;
 }
 
 function emptyBucket(bucket: string): BucketState {
@@ -49,6 +80,7 @@ function emptyBucket(bucket: string): BucketState {
     xtx: new Array(N_FEATURES * N_FEATURES).fill(0),
     xty: new Array(N_FEATURES).fill(0),
     dirty: false,
+    stats: emptyFeatureStats(),
   };
 }
 
@@ -61,6 +93,7 @@ function fromRow(row: BucketRow): BucketState {
     xtx: row.xtx.slice(),
     xty: row.xty.slice(),
     dirty: false,
+    stats: emptyFeatureStats(),
   };
 }
 
@@ -93,12 +126,17 @@ export class DynamicActionValueChallenger {
         },
       };
     }
+    // Standardization must be applied to the query vector iff the accumulator
+    // was built on standardized inputs — both paths gated on the same flag.
+    const x = STANDARDIZATION_ENABLED
+      ? standardizeFeatures(features, b.stats)
+      : features;
     let ridgeAdj = 0;
     if (b.n >= MIN_SAMPLES_FOR_RIDGE) {
       const beta = this.ridgeBeta(b);
       if (beta) {
         for (let i = 0; i < N_FEATURES; i++) {
-          ridgeAdj += (features[i] - b.meanX[i]) * beta[i];
+          ridgeAdj += (x[i] - b.meanX[i]) * beta[i];
         }
       }
     }
@@ -124,19 +162,36 @@ export class DynamicActionValueChallenger {
     if (features.length !== N_FEATURES) return;
     // Guard against NaN poisoning from CH string round-trips.
     if (!Number.isFinite(realizedValueBps) || features.some((f) => !Number.isFinite(f))) return;
+
+    // Fixed-band winsorization to bound single-observation influence on the
+    // ridge accumulator. Behind SHADOW_WINSORIZE=1 for staged rollout.
+    let y = realizedValueBps;
+    let x = features;
+    if (WINSORIZE_ENABLED) {
+      y = clip(y, -REALIZED_BPS_CAP, REALIZED_BPS_CAP);
+      x = features.map((f) => clip(f, -FEATURE_MAGNITUDE_CAP, FEATURE_MAGNITUDE_CAP));
+    }
+
     let b = this.buckets.get(bucket);
     if (!b) {
       b = emptyBucket(bucket);
       this.buckets.set(bucket, b);
     }
+    // Warm the rolling feature stats even when standardization is off so the
+    // reservoir is ready when the flag flips. Cheap: single array append.
+    updateFeatureStats(b.stats, x);
+    // Standardize update inputs iff enabled — matches predict-path treatment.
+    if (STANDARDIZATION_ENABLED) {
+      x = standardizeFeatures(x, b.stats);
+    }
     if (b.n >= MAX_SAMPLES_PER_BUCKET) this.decay(b, DECAY_FACTOR);
     const nPrime = b.n + 1;
-    b.meanY = (b.n * b.meanY + realizedValueBps) / nPrime;
+    b.meanY = (b.n * b.meanY + y) / nPrime;
     for (let i = 0; i < N_FEATURES; i++) {
-      b.meanX[i] = (b.n * b.meanX[i] + features[i]) / nPrime;
-      b.xty[i] += features[i] * realizedValueBps;
+      b.meanX[i] = (b.n * b.meanX[i] + x[i]) / nPrime;
+      b.xty[i] += x[i] * y;
       for (let j = 0; j < N_FEATURES; j++) {
-        b.xtx[i * N_FEATURES + j] += features[i] * features[j];
+        b.xtx[i * N_FEATURES + j] += x[i] * x[j];
       }
     }
     b.n = nPrime;
