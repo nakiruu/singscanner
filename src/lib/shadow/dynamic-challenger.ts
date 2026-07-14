@@ -58,6 +58,14 @@ export interface PredictDiag {
 interface BucketState {
   bucket: string;
   n: number;
+  // Effective sample size under exponential decay (Kish 1965; López de Prado
+  // 2018 ch. 4). Maintained in parallel with raw `n`: nEff ← nEff·γ + 1 on
+  // update, nEff ← nEff·γ on decay. At steady state nEff ≈ 1/(1-γ) — under
+  // DECAY_FACTOR=0.9 that's ≈10 samples of independent evidence. Callers
+  // gating on sample size (e.g. MIN_SAMPLES_FOR_RIDGE) should prefer nEff
+  // over raw n. Not persisted to CH — rebuilt on restart from raw n as a
+  // safe upper bound.
+  nEff: number;
   meanY: number;
   meanX: number[]; // length 8
   xtx: number[];   // length 64, row-major 8×8
@@ -75,6 +83,7 @@ function emptyBucket(bucket: string): BucketState {
   return {
     bucket,
     n: 0,
+    nEff: 0,
     meanY: 0,
     meanX: new Array(N_FEATURES).fill(0),
     xtx: new Array(N_FEATURES * N_FEATURES).fill(0),
@@ -88,6 +97,9 @@ function fromRow(row: BucketRow): BucketState {
   return {
     bucket: row.bucket,
     n: row.n,
+    // Best-effort hydrate: nEff isn't persisted. Bound by raw n on restart
+    // (a safe upper bound; will re-converge to 1/(1-γ) as updates flow in).
+    nEff: Math.min(row.n, 1 / Math.max(1e-6, 1 - DECAY_FACTOR)),
     meanY: row.meanY,
     meanX: row.meanX.slice(),
     xtx: row.xtx.slice(),
@@ -186,6 +198,8 @@ export class DynamicActionValueChallenger {
     }
     if (b.n >= MAX_SAMPLES_PER_BUCKET) this.decay(b, DECAY_FACTOR);
     const nPrime = b.n + 1;
+    // nEff geometric-decay update: bounded by 1/(1-γ) at steady state.
+    b.nEff = b.nEff * DECAY_FACTOR + 1;
     b.meanY = (b.n * b.meanY + y) / nPrime;
     for (let i = 0; i < N_FEATURES; i++) {
       b.meanX[i] = (b.n * b.meanX[i] + x[i]) / nPrime;
@@ -201,6 +215,7 @@ export class DynamicActionValueChallenger {
 
   private decay(b: BucketState, factor: number): void {
     b.n = Math.floor(b.n * factor);
+    b.nEff *= factor;
     for (let i = 0; i < N_FEATURES; i++) {
       b.xty[i] *= factor;
       for (let j = 0; j < N_FEATURES; j++) {
@@ -276,5 +291,13 @@ export class DynamicActionValueChallenger {
     return Array.from(this.buckets.values())
       .map((b) => ({ bucket: b.bucket, n: b.n, mean_y_bps: Math.round(b.meanY * 100) / 100 }))
       .sort((a, b) => a.bucket.localeCompare(b.bucket));
+  }
+
+  // Public accessor for effective sample size under exponential decay.
+  // Returns 0 for unknown buckets. Prefer this over raw `n` for sample-size
+  // gating (MIN_SAMPLES_FOR_RIDGE, downstream posterior fields).
+  getBucketNEff(bucket: string): number {
+    const b = this.buckets.get(bucket);
+    return b ? b.nEff : 0;
   }
 }
