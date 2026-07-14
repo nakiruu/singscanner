@@ -44,6 +44,10 @@ export interface PortfolioBuildOpts {
   concentrationScale: number;
   // Spec §57 γ exponent: 1 keeps source-conviction linear.
   gamma: number;
+  // Hard per-name cap. Above this, weight is clipped and overflow water-fills
+  // into uncapped names. MacLean/Thorp/Ziemba (2011) practitioner Kelly ceiling
+  // is 3-5% NAV; 10% is 2× that — bounds tail risk without over-constraining.
+  maxNameWeight: number;
 }
 
 const DEFAULT_OPTS: PortfolioBuildOpts = {
@@ -51,7 +55,35 @@ const DEFAULT_OPTS: PortfolioBuildOpts = {
   comfortableWeight: 0.35,
   concentrationScale: 300, // bps per unit squared overweight
   gamma: 1.0,
+  maxNameWeight: 0.10,
 };
+
+// Water-filling projection: clip any weight above cap, redistribute overflow
+// proportionally into uncapped names. Iterates until stable (usually ≤ 3 passes
+// even in adversarial slates; hard-bounded at 10 to fail loud on unexpected input).
+function projectToMaxWeight(weights: number[], cap: number): number[] {
+  if (cap <= 0 || !Number.isFinite(cap)) return weights.slice();
+  const w = weights.slice();
+  const isCapped = new Array(w.length).fill(false);
+  for (let iter = 0; iter < 10; iter++) {
+    let overflow = 0;
+    for (let i = 0; i < w.length; i++) {
+      if (!isCapped[i] && w[i] > cap) {
+        overflow += w[i] - cap;
+        w[i] = cap;
+        isCapped[i] = true;
+      }
+    }
+    if (overflow === 0) break;
+    let openMass = 0;
+    for (let i = 0; i < w.length; i++) if (!isCapped[i]) openMass += w[i];
+    if (openMass === 0) break; // all capped — residual returns to cash upstream
+    for (let i = 0; i < w.length; i++) {
+      if (!isCapped[i]) w[i] += overflow * (w[i] / openMass);
+    }
+  }
+  return w;
+}
 
 // Build target weights from a scored candidate slate.
 //
@@ -88,22 +120,31 @@ export function buildTargetPortfolio(
     return { weights: [], cashWeight: 1 };
   }
 
-  // Preliminary weights.
+  // Preliminary weights (pre-cap).
   const prelim = qualifying.map((c, i) => ({
     symbol: c.symbol,
     role: c.role,
     weight: grossExposure * (rawScores[i] / totalRaw),
   }));
 
+  // Hard-cap projection: clip any single name above maxNameWeight, redistribute
+  // overflow into uncapped names. Excess mass that cannot be redistributed
+  // (e.g. all names capped) flows to cash via the cashWeight residual below.
+  const cappedWeights = projectToMaxWeight(
+    prelim.map((p) => p.weight),
+    o.maxNameWeight,
+  );
+
   // Concentration penalty per candidate: (w - w_comfort)^2 · scale, bps.
   // The scanner attaches this to the row so the gate charges it on re-scoring.
-  const weights: TargetWeight[] = prelim.map((p) => {
-    const over = Math.max(0, p.weight - o.comfortableWeight);
+  const weights: TargetWeight[] = prelim.map((p, i) => {
+    const w = cappedWeights[i];
+    const over = Math.max(0, w - o.comfortableWeight);
     const conc = o.concentrationScale * over * over;
     return {
       symbol: p.symbol,
       role: p.role,
-      targetWeight: p.weight,
+      targetWeight: w,
       concentrationBps: conc,
     };
   });
