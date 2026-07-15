@@ -50,10 +50,22 @@ export interface PortfolioBuildOpts {
   maxNameWeight: number;
 }
 
+// C2-1: cashFloor is env-configurable. Legacy 0.02; Michaud (1989) and
+// DeMiguel/Garlappi/Uppal (2009) argue for larger cash buffer under
+// parameter uncertainty. Default preserves 0.02; operators can raise to
+// 0.05 baseline or 0.10 under regime uncertainty.
+const CASH_FLOOR_DEFAULT = Number(process.env.PORTFOLIO_CASH_FLOOR ?? "0.02");
+
+// C2-2: concentrationScale is env-configurable. Legacy 300 bps per unit
+// squared overweight — the shadow price of the concentration constraint
+// (Grinold & Kahn 2000 ch. 15). Recalibration against realized hit rate
+// on shadow_resolved over-softcap rows is a future TCA-driven task.
+const CONCENTRATION_SCALE_DEFAULT = Number(process.env.PORTFOLIO_CONCENTRATION_SCALE ?? "300");
+
 const DEFAULT_OPTS: PortfolioBuildOpts = {
-  cashFloor: 0.02,
+  cashFloor: CASH_FLOOR_DEFAULT,
   comfortableWeight: 0.35,
-  concentrationScale: 300, // bps per unit squared overweight
+  concentrationScale: CONCENTRATION_SCALE_DEFAULT,
   gamma: 1.0,
   maxNameWeight: 0.10,
 };
