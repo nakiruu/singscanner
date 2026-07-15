@@ -7,6 +7,11 @@
 // positions against the top BUY slate and emits explicit RotationCandidate
 // records that the per-user overlay can surface as ROTATE decisions.
 
+import {
+  buildRotationEvBreakdown,
+  type RotationEvBreakdown,
+} from "./rotation-breakdown";
+
 export interface RotationHolding {
   symbol: string;
   role: string;              // "primary" | "secondary" | "retained" | "none"
@@ -65,16 +70,37 @@ export function rotationOptsForHorizon(
 
 // Compute RotationEV(a -> b) in bps.
 // Spec §30: (EV_hold_b - EV_hold_a) - (sell_cost_a + buy_cost_b + transition).
+// Legacy scalar API preserved; use rotationEvBreakdown() for the decomposed
+// record consumed by TCA panels and admin dashboards.
 export function rotationEv(
   from: RotationHolding,
   to: RotationTarget,
 ): number {
-  const edgeDelta = to.netBps - from.netBps;
-  const transactionCost = from.exitCostBps + to.entryCostBps;
-  return edgeDelta - transactionCost;
+  return rotationEvBreakdown(from, to).netAdvantageBps;
+}
+
+// Decomposed RotationEV. Currently populates edgeDelta + sellCost + buyCost
+// from the RotationHolding/Target inputs; risk terms (transitionRisk,
+// partialFillPenalty, holdingCostAsymmetry) default to 0 pending caller
+// wiring per Spec §30. C4-1.
+export function rotationEvBreakdown(
+  from: RotationHolding,
+  to: RotationTarget,
+): RotationEvBreakdown {
+  return buildRotationEvBreakdown({
+    edgeDelta: to.netBps - from.netBps,
+    sellCost: from.exitCostBps,
+    buyCost: to.entryCostBps,
+  });
 }
 
 // Build the rotation candidate set for one holding vs a slate of targets.
+//
+// Sort order: netAdvantageBps DESC, then toSymbol ASC as an explicit
+// tie-breaker. Ties at the primary criterion (identical EV to two names)
+// were previously broken by array iteration order — deterministic today but
+// unstable across upstream reorderings. Alphabetical secondary sort is
+// arbitrary but STABLE (Paleologo 2021).
 export function scoreRotations(
   holding: RotationHolding,
   targets: readonly RotationTarget[],
@@ -82,7 +108,6 @@ export function scoreRotations(
 ): RotationCandidate[] {
   const o = { ...DEFAULT_ROTATION_OPTS, ...opts };
   const scored: RotationCandidate[] = targets
-    // Never rotate into yourself.
     .filter((t) => t.symbol !== holding.symbol)
     .map((t) => {
       const ev = rotationEv(holding, t);
@@ -95,7 +120,11 @@ export function scoreRotations(
         cleared: ev > hurdle,
       };
     })
-    .sort((a, b) => b.netAdvantageBps - a.netAdvantageBps)
+    .sort((a, b) => {
+      const primary = b.netAdvantageBps - a.netAdvantageBps;
+      if (primary !== 0) return primary;
+      return a.toSymbol.localeCompare(b.toSymbol);
+    })
     .slice(0, Math.max(1, o.topN));
   return scored;
 }
