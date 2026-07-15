@@ -18,11 +18,10 @@ import {
 } from "./persistence";
 import { extractFeatures, sessionBucketNow, bucketKey } from "./features";
 import type { ShadowMonitor } from "./monitor";
-import { HORIZON_RESOLUTION_MS } from "./monitor";
+import { HORIZON_RESOLUTION_MS, NET_DIVERGENCE_BPS } from "./monitor";
 
 const HISTORICAL_LOOKBACK_DAYS = Number(process.env.SHADOW_HISTORICAL_LOOKBACK_DAYS ?? "200");
 const MIN_HISTORY_DAYS = Number(process.env.SHADOW_MIN_HISTORY_DAYS ?? "100");
-const NET_DIVERGENCE_BPS = 20;
 
 // Fail-loud guard: prevent silent survivorship contamination when an operator
 // sets HISTORICAL_LOOKBACK_DAYS past the safe-without-PIT threshold. See

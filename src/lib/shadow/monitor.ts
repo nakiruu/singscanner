@@ -31,7 +31,10 @@ export const HORIZON_RESOLUTION_MS: Record<"3d" | "5d" | "10d", number> = {
 };
 
 // Divergence threshold on |Δnet| when decisions match.
-const NET_DIVERGENCE_BPS = 20;
+// Exported so backlog.ts (cold-start scoring) can import the SAME value.
+// Silent drift between live and backlog would produce different challenger-
+// promotion decisions on the same rows — landmine, not design.
+export const NET_DIVERGENCE_BPS = 20;
 
 // Bump-friction challenger: same fallback as static perturbation to keep
 // the first-cycle behavior sensible when the dynamic bucket is empty.
