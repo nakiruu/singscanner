@@ -6,6 +6,19 @@ import { clamp, lerp } from "./stats";
 const MIN_HORIZON = 5;    // 5 minutes
 const MAX_HORIZON = 8190; // 21 trading days * 6.5h * 60min
 
+// Session-multiplier mode selector. Legacy (default) uses the original
+// lerp envelope; "recal" raises to the Barclay-Hendershott (2003 RFS 16(4);
+// 2004 JoF 59(2)) empirical envelope of 3-4× regular for extended sessions
+// and multi-day carry for closed sessions. Env-controlled so operators can
+// stage the raise against TCA panel evidence before flipping globally.
+// See P1-REMAINING.md Batch B5 items V2/V3.
+//
+// Note: DO NOT enable simultaneously with GATE_SQRT_IMPACT_COEFF=25 —
+// they multiply through C_side and paper-vs-live attribution becomes
+// unattributable.
+const SESSION_MULT_MODE = process.env.GATE_SESSION_MULT_MODE ?? "legacy";
+const USE_RECAL_SESSION_MULTS = SESSION_MULT_MODE === "recal";
+
 // User-facing horizon presets exposed by the dashboard selector.
 // 3d = shortest actionable swing window; 21d = one trading month.
 // Anything outside this whitelist is refused by the API so the scanner's
@@ -103,8 +116,13 @@ export function calibrate(horizonMin: number): Calibration {
     frictionRetained:  lerp(t, 0.30, 0.42),
     exitReserve:       lerp(t, 1.00, 1.15),
     sessionRegular:    1.0,
-    sessionExtended:   lerp(t, 1.50, 1.05),
-    sessionClosed:     lerp(t, 2.00, 1.10),
+    // Legacy: lerp(t, 1.50, 1.05). Recal: Barclay-Hendershott (2003, 2004)
+    // envelope — extended sessions run 3-4× regular; the recal lerp targets
+    // 2.50 at 5m and 1.60 at 21d.
+    sessionExtended:   USE_RECAL_SESSION_MULTS ? lerp(t, 2.50, 1.60) : lerp(t, 1.50, 1.05),
+    // Legacy: lerp(t, 2.00, 1.10). Recal: multi-day holds bridge overnight
+    // gaps carrying full adverse-selection risk (Barclay-Hendershott 2003).
+    sessionClosed:     USE_RECAL_SESSION_MULTS ? lerp(t, 3.00, 1.80) : lerp(t, 2.00, 1.10),
     wMomentum:         lerp(t, 0.45, 0.25),
     wQuality:          lerp(t, 0.10, 0.40),
     wLiquidity:        lerp(t, 0.30, 0.05),
