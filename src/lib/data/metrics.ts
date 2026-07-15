@@ -122,3 +122,59 @@ export function getNetDivergenceRate(
   const hours = windowMs / 3_600_000;
   return { count, ratePerHour: hours > 0 ? count / hours : 0 };
 }
+
+// -- Effective breadth (C7-3) ------------------------------------------------
+//
+// Narang (2013, Inside the Black Box, 2nd ed. ch. 3):
+//   BR_eff = K / (1 + (K-1)·ρ̄)
+// where K = number of signals and ρ̄ = mean pairwise correlation of signal
+// exposures. Raw K overstates the Fundamental-Law breadth when signals
+// share exposure — effective breadth compounds sub-linearly with ρ.
+//
+// Enables root-cause on IR drop via IR ≈ IC · √BR_eff. Pure — caller
+// supplies the mean pairwise correlation, typically computed from
+// scan_rows.momentum/quality/liquidity/risk covariance.
+export function computeEffectiveBreadth(
+  kSignals: number,
+  meanPairwiseCorrelation: number,
+): number {
+  if (kSignals <= 1) return kSignals;
+  // Cap ρ into [-1/(K-1), 1] to keep the formula finite. Very negative ρ
+  // beyond the diversification bound is a data artifact.
+  const minRho = -1 / (kSignals - 1);
+  const rho = Math.max(minRho, Math.min(1, meanPairwiseCorrelation));
+  const denom = 1 + (kSignals - 1) * rho;
+  if (Math.abs(denom) < 1e-9) return kSignals;
+  return kSignals / denom;
+}
+
+// -- Cross-sectional rank stability (C7-5) -----------------------------------
+//
+// Per-symbol rolling std of composite-rank across the last N scans.
+// Grinold & Kahn (2000 ch. 15) — cross-sectional rank volatility is a
+// direct uncertainty measure. Rows with volatile ranks are noise
+// candidates; downstream sizing can shrink toward zero for them.
+
+const RANK_HISTORY_SIZE = 5;
+interface SymbolRankSample { rank: number; ts: number }
+const rankHistory = new Map<string, SymbolRankSample[]>();
+
+// Called once per (symbol, scan). Cheap: single array append + evict.
+export function recordSymbolRank(symbol: string, rank: number): void {
+  if (!Number.isFinite(rank)) return;
+  const buf = rankHistory.get(symbol) ?? [];
+  buf.push({ rank, ts: Date.now() });
+  if (buf.length > RANK_HISTORY_SIZE) buf.shift();
+  rankHistory.set(symbol, buf);
+}
+
+// Std of the last N ranks for this symbol. Returns 0 when < 2 samples
+// (nothing to compare yet).
+export function getSymbolRankStability(symbol: string): { n: number; std: number } {
+  const buf = rankHistory.get(symbol) ?? [];
+  const n = buf.length;
+  if (n < 2) return { n, std: 0 };
+  const mean = buf.reduce((s, x) => s + x.rank, 0) / n;
+  const variance = buf.reduce((s, x) => s + (x.rank - mean) ** 2, 0) / n;
+  return { n, std: Math.sqrt(Math.max(0, variance)) };
+}
