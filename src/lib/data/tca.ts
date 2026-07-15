@@ -17,7 +17,9 @@
 import { createClient, type ClickHouseClient } from "@clickhouse/client";
 import { recordError } from "./metrics";
 
-export type SessionBucket = "regular" | "premarket" | "afterhours" | "closed";
+// Canonical SessionBucket enum — see src/lib/engine/session-bucket.ts.
+export { type SessionBucket } from "@/lib/engine/session-bucket";
+import type { SessionBucket } from "@/lib/engine/session-bucket";
 export type Horizon = "3d" | "5d" | "10d";
 export type LiquidityBucket = "megacap" | "largecap" | "midcap" | "smallcap";
 

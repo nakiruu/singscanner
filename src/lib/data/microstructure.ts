@@ -132,7 +132,11 @@ export function amihudIlliq(
 // extended ≈ 55%, closed ≈ 90%.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type SessionBucket = "regular" | "premarket" | "afterhours" | "closed";
+// Canonical SessionBucket enum — see src/lib/engine/session-bucket.ts.
+// Re-exported here so existing consumers of microstructure.ts don't need
+// to know about the consolidation.
+export { type SessionBucket } from "@/lib/engine/session-bucket";
+import type { SessionBucket } from "@/lib/engine/session-bucket";
 
 export const ADVERSE_SELECTION_SHARE: Record<SessionBucket, number> = {
   regular: 0.35,

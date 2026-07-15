@@ -16,7 +16,12 @@ export const FEATURE_NAMES = [
 
 export const N_FEATURES = FEATURE_NAMES.length; // 8
 
-export type SessionBucket = "regular" | "premarket" | "afterhours" | "closed";
+// Canonical SessionBucket enum — see src/lib/engine/session-bucket.ts.
+// sessionBucketNow below has wall-clock + weekday semantics specific to
+// the shadow monitor's live-observation path; the shared session-bucket
+// module exposes the type + pure hour-of-day classifier.
+export { type SessionBucket } from "@/lib/engine/session-bucket";
+import type { SessionBucket } from "@/lib/engine/session-bucket";
 
 // Coarse US/Eastern session classification for the current wall clock.
 // Matches dynamic_challenger.py:_session_bucket_now.
