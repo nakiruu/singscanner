@@ -36,6 +36,17 @@ export interface GateInput {
   // Spec §21: concentration penalty in bps subtracted from the raw model edge.
   // Caller (portfolio-aware layer) supplies this; universe-wide scan leaves 0.
   concentrationBps?: number;
+  // Exit-cost formula selector. "haircut" (default) uses the legacy
+  // 0.65·C_side convention. "explicit" uses the Glosten-Milgrom (1985)
+  // decomposition into half-spread + adverse-selection + half-impact.
+  // Ships behind this flag so the shadow monitor can A/B the two exit
+  // models against realized fills before global default flip. See B5-F4
+  // in P1-REMAINING.md.
+  exitDecomposition?: "haircut" | "explicit";
+  // Adverse-selection cost in bps for the exit leg. Only consumed when
+  // exitDecomposition="explicit". Typically supplied by
+  // microstructure.ts:adverseSelectionBps(spreadBps, sessionAtExit).
+  adverseSelectionExitBps?: number;
 }
 
 export interface GateResult {
@@ -127,19 +138,51 @@ export function computeCEntry(ctx: CostLegContext, sessionMultEntry: number): CE
   };
 }
 
-// Exit-leg cost: 0.65 · (baseSideCost · sessionMultExit + C_gap) · exitReserve.
-// The 0.65 haircut is Spec §59's BUY-exit convention (bundled half-spread +
-// impact + adverse-selection). B5's cExit decomposition will replace this
-// with an explicit Glosten-Milgrom formula behind a Calibration flag; keep
-// the arithmetic identical here so B3 is a pure refactor.
+// Exit-cost mode + optional inputs. When mode="explicit", the caller must
+// supply an adverse-selection estimate (typically from
+// microstructure.ts:adverseSelectionBps for the session at expected exit).
+export interface CExitOpts {
+  mode?: "haircut" | "explicit";
+  adverseSelectionBps?: number;
+}
+
+// Exit-leg cost. Two mutually-exclusive formulas selected by opts.mode:
+//
+//   "haircut" (default):
+//     cExit = 0.65 · (baseSideCost · sessionMultExit + C_gap) · exitReserve
+//     Legacy Spec §59 convention — bundles half-spread + impact +
+//     adverse-selection into a single 0.65 scalar (Kissell 2013 ch. 5
+//     practitioner rule).
+//
+//   "explicit":
+//     cExit = (0.5·sa + adverseSelectionBps + 0.5·C_liq) · sessionMultExit
+//             · exitReserve  +  C_gap
+//     Glosten-Milgrom (1985 JFE) decomposition. Half-spread + explicit
+//     adverse-selection + half of the square-root impact cost. C_gap is
+//     an additive one-shot penalty in this mode (not inside the mult).
+//     Bouchaud et al. (2018 ch. 13) show meta-order impact is transient
+//     but 60-70% persists at end of day — a different mechanism than the
+//     0.65 haircut assumes.
 export function computeCExit(
   ctx: CostLegContext,
   sessionMultExit: number,
   exitReserve: number,
+  opts: CExitOpts = {},
 ): number {
   const s = computeCostSubcomponents(ctx);
+  const reserve = clamp(exitReserve, 0, 1);
+  const mode = opts.mode ?? "haircut";
+
+  if (mode === "explicit") {
+    const adverse = Math.max(0, opts.adverseSelectionBps ?? 0);
+    // Half-spread + adverse-selection + half of impact — all multiplied by
+    // the exit-leg session multiplier — then reserved.
+    const baseExplicit = 0.5 * s.sa + adverse + 0.5 * s.C_liq;
+    return baseExplicit * sessionMultExit * reserve + s.C_gap;
+  }
+
   const C_side_exit = s.baseSideCost * sessionMultExit + s.C_gap;
-  return 0.65 * C_side_exit * clamp(exitReserve, 0, 1);
+  return 0.65 * C_side_exit * reserve;
 }
 
 // -- Main gate ---------------------------------------------------------------
@@ -174,7 +217,10 @@ export function gateDecision(g: GateInput): GateResult {
   };
 
   const entry = computeCEntry(ctx, g.sessionMultEntry);
-  const cExit = computeCExit(ctx, g.sessionMultExit, g.exitReserve);
+  const cExit = computeCExit(ctx, g.sessionMultExit, g.exitReserve, {
+    mode: g.exitDecomposition,
+    adverseSelectionBps: g.adverseSelectionExitBps,
+  });
   // Queue cost is entry-leg (fills happen on entry). Session premium on queue
   // scales with how far above 1.0 the entry mult is.
   const cQueue = Math.min(60, 0.8 + 12 * entry.ua + 4.5 * Math.max(0, g.sessionMultEntry - 1));
