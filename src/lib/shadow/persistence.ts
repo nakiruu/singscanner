@@ -408,3 +408,60 @@ export async function loadBuckets(horizon: string): Promise<Map<string, BucketRo
     return out;
   }
 }
+
+// C6-4: divergence-rate rollup. Complements the in-memory rolling counter
+// (metrics.ts:recordNetDivergence) with a CH-backed view over shadow_pending.
+// A pending row is inserted whenever baseline+challenger decisions disagree
+// OR nets diverge past NET_DIVERGENCE_BPS — so rows-per-day in shadow_pending
+// tracks the daily divergence rate, but WITHOUT decomposing decision-flip
+// vs net-drift.
+//
+// Fail-open: returns empty rollup on any error.
+export interface DivergenceRateRollup {
+  horizon: string;
+  windowDays: number;
+  dailyCounts: Array<{ day: string; count: number }>;
+  totalPending: number;
+  meanPerDay: number;
+}
+
+export async function queryDivergenceRateRollup(
+  horizon: string,
+  windowDays = 14,
+): Promise<DivergenceRateRollup> {
+  const empty: DivergenceRateRollup = {
+    horizon,
+    windowDays,
+    dailyCounts: [],
+    totalPending: 0,
+    meanPerDay: 0,
+  };
+  const c = getClient();
+  if (!c) return empty;
+  try {
+    const rs = await c.query({
+      query: `
+        SELECT
+          formatDateTime(toStartOfDay(submitted_at), '%Y-%m-%d') AS day,
+          count() AS count
+        FROM shadow_pending
+        WHERE horizon = {horizon:String}
+          AND submitted_at >= now() - INTERVAL {windowDays:UInt16} DAY
+        GROUP BY day
+        ORDER BY day ASC
+      `,
+      query_params: { horizon, windowDays },
+      format: "JSONEachRow",
+    });
+    const rows = (await rs.json()) as Array<{ day: string; count: number | string }>;
+    const dailyCounts = rows.map((r) => ({ day: r.day, count: Number(r.count) || 0 }));
+    const totalPending = dailyCounts.reduce((s, x) => s + x.count, 0);
+    const meanPerDay = dailyCounts.length > 0 ? totalPending / dailyCounts.length : 0;
+    return { horizon, windowDays, dailyCounts, totalPending, meanPerDay };
+  } catch (err) {
+    if (err instanceof Error) {
+      recordError({ kind: "ch", message: `queryDivergenceRateRollup(${horizon}, ${windowDays}d): ${err.message}`, stack: err.stack });
+    }
+    return empty;
+  }
+}
