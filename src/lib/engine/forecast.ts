@@ -34,13 +34,35 @@ export interface ForecastResult {
 
 const TRADING_MIN_PER_YEAR = 60 * 6.5 * 252;
 
-export function composite(s: SignalScores, c: Calibration): number {
-  return (
+export interface CompositeOpts {
+  // Optional cost-aware penalty in bps. When supplied, the composite is
+  // shifted down by `costPenaltyBps / c.evidenceScale` so downstream ranking
+  // is on `edge − cost` rather than raw edge — Frazzini/Israel/Moskowitz
+  // (2018) show cost-inside ranking dominates cost-then-filter in the
+  // presence of tight friction budgets. Scale by evidenceScale so the shift
+  // is comparable to the 0..100 composite domain.
+  //
+  // CALIBRATION HAZARD: enabling this shifts pUp distribution, which then
+  // shifts starScore, evidenceThreshold, and memberPupMin cutoffs. Revisit
+  // those before enabling globally.
+  costPenaltyBps?: number;
+}
+
+export function composite(
+  s: SignalScores,
+  c: Calibration,
+  opts?: CompositeOpts,
+): number {
+  const raw =
     c.wMomentum  * s.momentum  +
     c.wQuality   * s.quality   +
     c.wLiquidity * s.liquidity +
-    c.wRisk      * s.risk
-  );
+    c.wRisk      * s.risk;
+  if (opts?.costPenaltyBps != null && opts.costPenaltyBps > 0) {
+    const shift = opts.costPenaltyBps / Math.max(1, c.evidenceScale);
+    return raw - shift;
+  }
+  return raw;
 }
 
 export function forecast({ signals, confidence, volAnn, edgeHorizonMin, calib }: ForecastInput): ForecastResult {
