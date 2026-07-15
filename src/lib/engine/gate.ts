@@ -16,7 +16,13 @@ export interface GateInput {
   barDollarVol: number;      // bar-level $ volume
   quoteAgeSec: number;
   gapDays: number;           // # of trading days since last bar (1 = normal)
-  sessionMult: number;       // from Calibration (regular/extended/closed)
+  // Session multipliers on each leg. Barclay & Hendershott (2003 RFS 16(4);
+  // 2004 JoF 59(2)) show entry and exit have empirically different session
+  // sensitivities; splitting the previous single sessionMult lets calibration
+  // charge each leg on the session it will actually cross. When both mults
+  // are set equal the outputs are byte-identical to the pre-split behavior.
+  sessionMultEntry: number;  // from Calibration (regular/extended/closed)
+  sessionMultExit: number;   // from Calibration
   exitReserve: number;       // from Calibration
   opRisk: number;            // from Calibration (bps)
   cashWait: number;          // from Calibration (bps)
@@ -88,11 +94,19 @@ export function gateDecision(g: GateInput): GateResult {
   const C_stale = staleCost(g.quoteAgeSec);
   const C_gap = clamp((g.gapDays - 1) * 1.75, 0, 25);
 
-  const C_side = (0.5 * sa + 0.10 * Math.min(200, va) + C_liq + C_stale) * g.sessionMult + C_gap;
-  const cEntry = C_side;
+  // Base cost stack (spread + vol + liquidity + stale) that gets multiplied
+  // by whichever session mult applies to the leg in question. C_gap is a
+  // one-shot staleness penalty added once per leg (matches pre-split behavior).
+  const baseSideCost = 0.5 * sa + 0.10 * Math.min(200, va) + C_liq + C_stale;
+  const C_side_entry = baseSideCost * g.sessionMultEntry + C_gap;
+  const C_side_exit  = baseSideCost * g.sessionMultExit  + C_gap;
+
+  const cEntry = C_side_entry;
   // Spec §59: BUY exit modeled at 0.65·C_side, then reserved at exit_reserve∈[0,1].
-  const cExit  = 0.65 * C_side * clamp(g.exitReserve, 0, 1);
-  const cQueue = Math.min(60, 0.8 + 12 * ua + 4.5 * Math.max(0, g.sessionMult - 1));
+  const cExit  = 0.65 * C_side_exit * clamp(g.exitReserve, 0, 1);
+  // Queue cost is entry-leg (fills happen on entry). Session premium on queue
+  // scales with how far above 1.0 the entry mult is.
+  const cQueue = Math.min(60, 0.8 + 12 * ua + 4.5 * Math.max(0, g.sessionMultEntry - 1));
   const cMemory = Math.max(0, g.actionMemoryBps ?? 0);
   const cConcentration = Math.max(0, g.concentrationBps ?? 0);
 
