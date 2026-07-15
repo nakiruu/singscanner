@@ -20,10 +20,38 @@ import {
 } from "./standardization";
 
 const PRIOR_STRENGTH_KAPPA = 20.0;
-const RIDGE_LAMBDA = 5.0;
+
+// Ridge regularization strength. Legacy default 5.0 preserves current
+// behavior; post-standardization callers should target λ ≈ trace(XᵀX)/p
+// (likely 10-25) — see P2-PLAN.md C1-3. Env-configurable so operators
+// can bump after enabling SHADOW_FEATURE_STANDARDIZATION=1.
+const RIDGE_LAMBDA = Number(process.env.SHADOW_RIDGE_LAMBDA ?? "5.0");
+
+// Minimum sample count before within-bucket ridge kicks in. Gated on
+// effective sample size (nEff) rather than raw n when
+// SHADOW_MIN_SAMPLES_FOR_RIDGE_EFFECTIVE=1 is set — under DECAY_FACTOR=0.9
+// raw n=45 has only ~10-15 effectively independent samples (López de Prado
+// 2018 ch. 4). See P2-PLAN.md C1-5.
 const MIN_SAMPLES_FOR_RIDGE = 8;
+const MIN_SAMPLES_FOR_RIDGE_USE_EFFECTIVE =
+  process.env.SHADOW_MIN_SAMPLES_FOR_RIDGE_EFFECTIVE === "1";
+
 const MAX_SAMPLES_PER_BUCKET = 500;
-const DECAY_FACTOR = 0.9;
+
+// Exponential decay factor. Legacy 0.9 across all horizons; per-horizon
+// overrides (0.90/0.95/0.98 for 3d/5d/10d) let longer holds retain
+// proportionally more memory since realized outcomes take longer to
+// invalidate (López de Prado 2018 ch. 4; Pesaran & Timmermann 2007).
+// See P2-PLAN.md C1-4.
+const DEFAULT_DECAY_FACTOR = 0.9;
+function decayFactorForHorizon(horizon: string): number {
+  if (horizon === "3d") return Number(process.env.SHADOW_DECAY_FACTOR_3D ?? DEFAULT_DECAY_FACTOR);
+  if (horizon === "5d") return Number(process.env.SHADOW_DECAY_FACTOR_5D ?? DEFAULT_DECAY_FACTOR);
+  if (horizon === "10d") return Number(process.env.SHADOW_DECAY_FACTOR_10D ?? DEFAULT_DECAY_FACTOR);
+  return DEFAULT_DECAY_FACTOR;
+}
+// Legacy alias used by paths that don't have per-horizon context yet.
+const DECAY_FACTOR = DEFAULT_DECAY_FACTOR;
 
 // Debounce window: coalesce many updates into one flush per bucket.
 const FLUSH_DEBOUNCE_MS = Number(process.env.SHADOW_BUCKET_FLUSH_DEBOUNCE_MS ?? "30000");
@@ -93,13 +121,15 @@ function emptyBucket(bucket: string): BucketState {
   };
 }
 
-function fromRow(row: BucketRow): BucketState {
+function fromRow(row: BucketRow, decayFactor: number): BucketState {
   return {
     bucket: row.bucket,
     n: row.n,
     // Best-effort hydrate: nEff isn't persisted. Bound by raw n on restart
     // (a safe upper bound; will re-converge to 1/(1-γ) as updates flow in).
-    nEff: Math.min(row.n, 1 / Math.max(1e-6, 1 - DECAY_FACTOR)),
+    // Under per-horizon decayFactor the steady-state ceiling scales; use the
+    // horizon-appropriate γ so restarts don't over-clamp long-horizon buckets.
+    nEff: Math.min(row.n, 1 / Math.max(1e-6, 1 - decayFactor)),
     meanY: row.meanY,
     meanX: row.meanX.slice(),
     xtx: row.xtx.slice(),
@@ -111,17 +141,19 @@ function fromRow(row: BucketRow): BucketState {
 
 export class DynamicActionValueChallenger {
   private readonly horizon: string;
+  private readonly decayFactor: number;
   private readonly buckets = new Map<string, BucketState>();
   private flushTimer: NodeJS.Timeout | null = null;
 
   constructor(horizon: string) {
     this.horizon = horizon;
+    this.decayFactor = decayFactorForHorizon(horizon);
   }
 
   async load(): Promise<void> {
     const rows = await loadBuckets(this.horizon);
     for (const [key, row] of rows) {
-      this.buckets.set(key, fromRow(row));
+      this.buckets.set(key, fromRow(row, this.decayFactor));
     }
   }
 
@@ -144,7 +176,9 @@ export class DynamicActionValueChallenger {
       ? standardizeFeatures(features, b.stats)
       : features;
     let ridgeAdj = 0;
-    if (b.n >= MIN_SAMPLES_FOR_RIDGE) {
+    // C1-5: gate on effective sample size when flag is on (default: raw n).
+    const nForRidgeGating = MIN_SAMPLES_FOR_RIDGE_USE_EFFECTIVE ? b.nEff : b.n;
+    if (nForRidgeGating >= MIN_SAMPLES_FOR_RIDGE) {
       const beta = this.ridgeBeta(b);
       if (beta) {
         for (let i = 0; i < N_FEATURES; i++) {
@@ -196,10 +230,10 @@ export class DynamicActionValueChallenger {
     if (STANDARDIZATION_ENABLED) {
       x = standardizeFeatures(x, b.stats);
     }
-    if (b.n >= MAX_SAMPLES_PER_BUCKET) this.decay(b, DECAY_FACTOR);
+    if (b.n >= MAX_SAMPLES_PER_BUCKET) this.decay(b, this.decayFactor);
     const nPrime = b.n + 1;
     // nEff geometric-decay update: bounded by 1/(1-γ) at steady state.
-    b.nEff = b.nEff * DECAY_FACTOR + 1;
+    b.nEff = b.nEff * this.decayFactor + 1;
     b.meanY = (b.n * b.meanY + y) / nPrime;
     for (let i = 0; i < N_FEATURES; i++) {
       b.meanX[i] = (b.n * b.meanX[i] + x[i]) / nPrime;
