@@ -4,6 +4,7 @@
 
 import { fetchDailyBars, computeBarFeatures } from "@/lib/data/bars";
 import { fetchActiveUniverse } from "@/lib/data/universe";
+import { assertPointInTimeAvailable } from "@/lib/data/universe-pit";
 import { calibrate, parseHorizon } from "@/lib/engine/horizon";
 import { computeFamilies, type RawSymbolInputs } from "@/lib/engine/signals";
 import { forecast } from "@/lib/engine/forecast";
@@ -22,6 +23,11 @@ import { HORIZON_RESOLUTION_MS } from "./monitor";
 const HISTORICAL_LOOKBACK_DAYS = Number(process.env.SHADOW_HISTORICAL_LOOKBACK_DAYS ?? "200");
 const MIN_HISTORY_DAYS = Number(process.env.SHADOW_MIN_HISTORY_DAYS ?? "100");
 const NET_DIVERGENCE_BPS = 20;
+
+// Fail-loud guard: prevent silent survivorship contamination when an operator
+// sets HISTORICAL_LOOKBACK_DAYS past the safe-without-PIT threshold. See
+// src/lib/data/universe-pit.ts module header for the rationale.
+assertPointInTimeAvailable(HISTORICAL_LOOKBACK_DAYS);
 
 export interface BacklogProgress {
   horizon: string;
