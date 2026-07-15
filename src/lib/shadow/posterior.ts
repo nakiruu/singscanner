@@ -1,5 +1,15 @@
 // Beta-shrinkage promotion posterior. Ported from shadow_monitor.py:posterior().
 // Pure function — no state, no I/O.
+//
+// Two-tier promotion gating:
+//   Tier 1 (this module): raw posterior clears minCleanRows + minPositiveShare
+//                         + minPosteriorDelta. Fast, cheap, per-horizon
+//                         configurable via SHADOW_MIN_CLEAN_ROWS_{3D,5D,10D}.
+//   Tier 2 (promotion-guard.ts): DSR floor + k-cycle peeking correction
+//                         against Tier 1's Posterior. Set SHADOW_DSR_GATE=1
+//                         to activate; consumes delta_post_se_bps from here.
+// Do NOT raise SHADOW_MIN_POSTERIOR_DELTA_BPS globally when Tier 2 is on —
+// the DSR floor already provides search-corrected significance.
 
 export interface PosteriorOpts {
   kappa0?: number;               // default 7
@@ -37,6 +47,17 @@ const DEFAULT_OPTS: Required<PosteriorOpts> = {
   minPosteriorDelta: envNum("SHADOW_MIN_POSTERIOR_DELTA_BPS", 0),
 };
 
+// Per-horizon minCleanRows overrides. Label-overlap correction (B2-S3) shows
+// n_eff at 10d ≈ n_clean/2, so longer horizons need proportionally more
+// clean rows to reach the same effective evidence (Grinold & Kahn 2000 ch. 5).
+// Falls back to SHADOW_MIN_CLEAN_ROWS when the horizon-specific env is unset.
+function minCleanRowsForHorizon(horizon: string | undefined, base: number): number {
+  if (horizon === "3d") return envNum("SHADOW_MIN_CLEAN_ROWS_3D", base);
+  if (horizon === "5d") return envNum("SHADOW_MIN_CLEAN_ROWS_5D", base);
+  if (horizon === "10d") return envNum("SHADOW_MIN_CLEAN_ROWS_10D", base);
+  return base;
+}
+
 // Label-overlap coefficients per horizon (Grinold & Kahn 2000 ch. 5).
 // Forward-return windows overlap between consecutive scans; the effective
 // number of independent observations is n / (1 + 2·ρ). Values are practitioner
@@ -53,6 +74,9 @@ export function computePosterior(
   opts: PosteriorOpts = {},
   horizon?: "3d" | "5d" | "10d",
 ): Posterior {
+  // Resolve per-horizon minCleanRows override before merging opts.
+  const baseMinCleanRows = opts.minCleanRows ?? DEFAULT_OPTS.minCleanRows;
+  opts = { ...opts, minCleanRows: minCleanRowsForHorizon(horizon, baseMinCleanRows) };
   const o = { ...DEFAULT_OPTS, ...opts };
   const n = rows.length;
   if (n === 0) {
