@@ -97,6 +97,29 @@ function sessionMultFor(phase: MarketPhase, calib: ReturnType<typeof calibrate>)
   }
 }
 
+// C5-4: session mult for a specific leg. Wraps sessionMultFor so callers
+// building a GateInput don't need to know which Calibration field to
+// consult per (phase, leg) pair. Today both legs use the same phase-mapped
+// value; once B5 recal ships with distinct entry/exit envelopes, this
+// helper is the single seam where the split routing lives.
+//
+// leg semantics:
+//   "entry" — cost incurred at trade placement (uses current phase)
+//   "exit"  — cost incurred at expected exit (uses expected-exit phase;
+//             today we assume the exit is in the same phase as entry, but
+//             callers can override with a phaseAtExit param below).
+export function sessionMultForLeg(
+  phase: MarketPhase,
+  leg: "entry" | "exit",
+  calib: ReturnType<typeof calibrate>,
+  phaseAtExit?: MarketPhase,
+): number {
+  if (leg === "exit" && phaseAtExit != null) {
+    return sessionMultFor(phaseAtExit, calib);
+  }
+  return sessionMultFor(phase, calib);
+}
+
 interface SymbolPack {
   symbol: string;
   exchange: string;
