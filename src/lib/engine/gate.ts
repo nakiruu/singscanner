@@ -4,6 +4,16 @@
 import { clamp } from "./stats";
 import type { Decision, Role } from "./types";
 
+// Square-root impact-law coefficient (Bouchaud et al. 2018 ch. 12; Kissell
+// 2013 ch. 6). Bouchaud predicts Y·σ_daily·10000·√(Q/ADV) with Y ∈ [0.5, 1.5];
+// at σ_daily=1.5% and ua=1 that's 75-225 bps, versus the current 9 bps
+// delivered by SQRT_IMPACT_COEFF=9. TCA panel evidence in mid-cap regular-
+// session cells is expected to justify bumping toward 25 (rough midpoint of
+// the Bouchaud envelope). Env-configurable so operators can stage the raise
+// against realized fills without a rebuild. Default 9 preserves current
+// behavior. See P1-REMAINING.md Batch B5 item V4.
+const SQRT_IMPACT_COEFF = Number(process.env.GATE_SQRT_IMPACT_COEFF ?? "9");
+
 export interface GateInput {
   role: Role;
   roleEdge: number;          // bps for the role's band (primary/secondary/retained)
@@ -115,7 +125,7 @@ function computeCostSubcomponents(ctx: CostLegContext): CostSubcomponents {
   // treat as full-size (ua=1) rather than free.
   const hasBarVol = ctx.barDollarVol > 0;
   const ua = hasBarVol ? ctx.notional / ctx.barDollarVol : (ctx.notional > 0 ? 1 : 0);
-  const C_liq_natural = Math.min(120, 0.25 + 9 * Math.sqrt(Math.min(9, ua)));
+  const C_liq_natural = Math.min(120, 0.25 + SQRT_IMPACT_COEFF * Math.sqrt(Math.min(9, ua)));
   // Spec §59: missing-liquidity floor of 35 fires when barDollarVol==0 with positive notional.
   const C_liq = !hasBarVol && ctx.notional > 0 ? Math.max(35, C_liq_natural) : C_liq_natural;
   const C_stale = staleCost(ctx.quoteAgeSec);
