@@ -46,6 +46,23 @@ const DEFAULT_ROTATION_OPTS: RotationOpts = {
   topN: 3,
 };
 
+// Horizon-scaled hurdle presets. Alpha decays roughly √t at cross-sectional
+// signals so 10d requires 2.4× the 3d hurdle to gate a rotation at equivalent
+// significance (Grinold 2010; Qian/Sorensen/Hua 2007). Callers pass this
+// into scoreRotations to per-horizon-scale the hurdle without stomping on
+// the DEFAULT_ROTATION_OPTS behavior other consumers rely on. From
+// P2-PLAN.md C2-4.
+export function rotationOptsForHorizon(
+  horizon: "3d" | "5d" | "10d" | "21d",
+): Pick<RotationOpts, "transitionHurdleBps" | "minAdvantageBps"> {
+  switch (horizon) {
+    case "3d":  return { transitionHurdleBps: 25, minAdvantageBps: 15 };
+    case "5d":  return { transitionHurdleBps: 35, minAdvantageBps: 20 };
+    case "10d": return { transitionHurdleBps: 60, minAdvantageBps: 30 };
+    case "21d": return { transitionHurdleBps: 90, minAdvantageBps: 45 };
+  }
+}
+
 // Compute RotationEV(a -> b) in bps.
 // Spec §30: (EV_hold_b - EV_hold_a) - (sell_cost_a + buy_cost_b + transition).
 export function rotationEv(
