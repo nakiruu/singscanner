@@ -22,9 +22,23 @@ export interface RoleAssignment {
   starEligible: boolean;
 }
 
+export interface AssignRolesOpts {
+  // Optional tie-break comparator. Not currently consumed by the assignment
+  // pass itself (assignRoles doesn't sort) — reserved for downstream callers
+  // that pick top-N within a role and need deterministic ordering near the
+  // primaryBand boundary (Paleologo 2021). Signature: standard Array.sort
+  // comparator taking (a, b, idxA, idxB) where indices are into `rows`.
+  tieBreaker?: (a: RoleInputRow, b: RoleInputRow, idxA: number, idxB: number) => number;
+}
+
 // Pure: returns a new array of assignments aligned by index with `rows`.
 // Only primary BUYs are star-eligible (the top-5 cut happens elsewhere).
-export function assignRoles(rows: readonly RoleInputRow[], calib: Calibration): RoleAssignment[] {
+export function assignRoles(
+  rows: readonly RoleInputRow[],
+  calib: Calibration,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _opts?: AssignRolesOpts,
+): RoleAssignment[] {
   // First pass: find max modelEdge among rows that meet the long-band gate.
   let maxEdge = -Infinity;
   for (const r of rows) {
