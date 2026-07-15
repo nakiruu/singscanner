@@ -19,7 +19,7 @@ import {
 } from "./features";
 import type { ScanSnapshot, ScanRow } from "@/lib/engine/types";
 import { queryBars } from "@/lib/data/clickhouse";
-import { recordError } from "@/lib/data/metrics";
+import { recordError, recordNetDivergence } from "@/lib/data/metrics";
 
 // Trading-day approximations for horizon → resolution window.
 // 6.5h × 60min × 60s × 1000ms per trading day.
@@ -94,6 +94,7 @@ export class ShadowMonitor {
         const chalDecision = deriveChallengerDecision(row, chalNet);
 
         const netDiverges = Math.abs(chalNet - row.net) > NET_DIVERGENCE_BPS;
+        if (netDiverges) recordNetDivergence(this.horizon);
         if (row.decision === chalDecision && !netDiverges) continue;
 
         const dedupKey = `${row.symbol}|${row.decision}|${chalDecision}`;

@@ -85,3 +85,40 @@ export function getErrors(limit = 50): MetricsError[] {
 export function getErrorDetail(id: string): MetricsError | null {
   return errIndex.get(id) ?? null;
 }
+
+// -- Net divergence rolling counter (C6-2) -----------------------------------
+//
+// The shadow monitor flags rows where baseline and challenger produce the
+// same decision but their net-bps values diverge by more than
+// NET_DIVERGENCE_BPS (see monitor.ts). Tracking that rate per horizon
+// exposes P(y|X) drift — a rising divergence rate means the challenger's
+// per-bucket ridge has drifted meaningfully from the baseline's static
+// friction, worth investigating before the drift becomes a promotion
+// decision (Gama et al. 2014, "A Survey on Concept Drift Adaptation", ACM CS).
+
+const DIVERGENCE_BUF_SIZE = 500;
+interface DivergenceSample { horizon: string; ts: number }
+const divergenceBuf: DivergenceSample[] = [];
+
+// Called from monitor.ts:observe / backlog.ts when a row's baseline and
+// challenger nets diverge past NET_DIVERGENCE_BPS.
+export function recordNetDivergence(horizon: string): void {
+  divergenceBuf.push({ horizon, ts: Date.now() });
+  if (divergenceBuf.length > DIVERGENCE_BUF_SIZE) divergenceBuf.shift();
+}
+
+// Divergences per hour for a given horizon over the last windowMs.
+// Returns 0 when the buffer has no data for that horizon in the window —
+// callers distinguish "no drift" from "no data" via the returned count.
+export function getNetDivergenceRate(
+  horizon: string,
+  windowMs = 3_600_000,
+): { count: number; ratePerHour: number } {
+  const cutoff = Date.now() - windowMs;
+  let count = 0;
+  for (const s of divergenceBuf) {
+    if (s.horizon === horizon && s.ts >= cutoff) count++;
+  }
+  const hours = windowMs / 3_600_000;
+  return { count, ratePerHour: hours > 0 ? count / hours : 0 };
+}
