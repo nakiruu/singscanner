@@ -17,6 +17,11 @@ const SIGNAL_WINSORIZE_LO_PCT = 1;
 const SIGNAL_WINSORIZE_HI_PCT = 99;
 const SIGNAL_WINSORIZE_MIN_N = 20;
 
+// C7-1: enable Amihud ILLIQ as a 4th Liquidity-family component.
+// Requires RawSymbolInputs.amihud to be populated upstream (bars.ts /
+// scanner.ts). Legacy 3-component Liquidity family stays intact by default.
+const AMIHUD_ENABLED = process.env.SIGNAL_LIQUIDITY_FAMILY_AMIHUD === "on";
+
 // In-place tail clip on an already-sorted array. Preserves sort order
 // because the tails collapse to boundary values (many repeated ends).
 function applyTailClip(sorted: number[]): void {
@@ -60,6 +65,12 @@ export interface RawSymbolInputs {
   spreadBps: number;
   barDollarVol: number;
   relVol: number;               // today's vol / typical vol (>0)
+  // C7-1: optional Amihud ILLIQ = mean(|return_t| / dollar_volume_t) over
+  // trailing 20 days. Computed upstream (bars.ts) from the same window
+  // used for realized vol. Small values = liquid, large = illiquid.
+  // Consumed as a 4th Liquidity-family component when
+  // SIGNAL_LIQUIDITY_FAMILY_AMIHUD=on. Null/undefined = component skipped.
+  amihud?: number | null;
 
   // Risk (higher composite = SAFER)
   realizedVol: number;          // any consistent realized-vol metric
@@ -172,8 +183,14 @@ export function computeFamilies(rows: readonly RawSymbolInputs[]): SignalScores[
   const s_de      = sortedFiniteAscNullable(rows.map((r) => r.debtToEquity));
   const s_fwdPE   = sortedFiniteAscNullable(rows.map((r) => r.fwdPE));
 
-  // liquidity sorted universe (only barDollarVol needs cross-sectional rank)
+  // liquidity sorted universes
   const s_dollarVol = sortedFiniteAsc(rows.map((r) => r.barDollarVol));
+  // C7-1: Amihud rank universe. Ordered ASCENDING (small = liquid) so we
+  // invert via `100 - percentileRank` when scoring — higher family score
+  // = MORE liquid, consistent with the tightSpread / dollarVolPct axes.
+  const s_amihud = AMIHUD_ENABLED
+    ? sortedFiniteAscNullable(rows.map((r) => r.amihud ?? null))
+    : [];
 
   // risk sorted universes
   const s_realVol = sortedFiniteAsc(rows.map((r) => r.realizedVol));
@@ -231,7 +248,16 @@ export function computeFamilies(rows: readonly RawSymbolInputs[]): SignalScores[
     // log10(relVol) guarded for non-positive input
     const safeRelVol = r.relVol > 0 ? r.relVol : 1e-6;
     const relVolScore = clamp(50 + 25 * Math.log10(safeRelVol), 0, 100);
-    const liquidity = mean([tightSpread, dollarVolPct, relVolScore]);
+    // C7-1: Amihud ILLIQ rank inverted so higher = more liquid; averaged in
+    // only when both the flag is on AND a value was provided upstream.
+    const amihudScore =
+      AMIHUD_ENABLED && r.amihud != null && Number.isFinite(r.amihud)
+        ? 100 - percentileRank(r.amihud, s_amihud)
+        : null;
+    const liqParts = amihudScore != null
+      ? [tightSpread, dollarVolPct, relVolScore, amihudScore]
+      : [tightSpread, dollarVolPct, relVolScore];
+    const liquidity = mean(liqParts);
 
     // ---- Risk (higher = safer) ----
     const safeVol  = 100 - percentileRank(r.realizedVol, s_realVol);
