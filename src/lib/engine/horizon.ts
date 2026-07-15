@@ -19,6 +19,48 @@ const MAX_HORIZON = 8190; // 21 trading days * 6.5h * 60min
 const SESSION_MULT_MODE = process.env.GATE_SESSION_MULT_MODE ?? "legacy";
 const USE_RECAL_SESSION_MULTS = SESSION_MULT_MODE === "recal";
 
+// C3-2: horizon-lerp primaryBand. Legacy fixed 30 bps under-represents
+// long-horizon dispersion — 21d has wider raw-edge dispersion due to
+// compounded vol (Grinold 2010). Enable via SIGNAL_PRIMARY_BAND_HORIZON_LERP=on.
+const USE_PRIMARY_BAND_HORIZON_LERP =
+  process.env.SIGNAL_PRIMARY_BAND_HORIZON_LERP === "on";
+
+// C3-3: edgePrimary horizon-scale mode. Legacy uses fixed edgePrimary=460
+// across horizons. IC(h) grows sub-linearly with √h (Grinold 2010;
+// Qian/Sorensen/Hua 2007) — fixed absolute-bps band over-represents 21d,
+// under-represents 3d. Modes:
+//   "fixed" (default): current 460/348/200
+//   "scaled":          edgePrimary(t) = base · √(hdEff/5)
+const EDGE_BAND_MODE = process.env.SIGNAL_EDGE_BAND_MODE ?? "fixed";
+const USE_EDGE_BAND_SCALED = EDGE_BAND_MODE === "scaled";
+
+// C3-4: cashWait SPY-scaled. Multiplies the base cashWait lerp by the
+// SPY 30d Sharpe proxy supplied via CalibrationContext. Bull tape →
+// higher cashWait; bear tape → lower (Grinold & Kahn 2000 ch. 15
+// reference-asset hurdle). Only fires when both the env flag is on AND
+// the context is supplied.
+const USE_CASH_WAIT_SPY_SCALED =
+  process.env.SIGNAL_CASH_WAIT_SPY_SCALED === "on";
+
+// C3-6: optional context supplied at calibrate-time to enable regime-
+// conditional behavior. All fields optional; missing fields fall back to
+// the static lerp defaults. Not yet consumed by anything on the default
+// code path — unblocks P3 regime detection.
+export interface CalibrationContext {
+  // SPY 30d annualized return (fractional, e.g. 0.15 = +15%).
+  spyReturn30d?: number;
+  // SPY 30d realized volatility (fractional, annualized).
+  spyVol30d?: number;
+  // Universe cardinality at this snapshot (for adaptive-band scaling).
+  universeSize?: number;
+  // Cohort cardinality (rows passing evidence/pUp gate) — informs C3-1
+  // adaptive primaryBand callers.
+  cohortCardinality?: number;
+  // Optional forward-declared market vol classification for future
+  // regime-detection wiring.
+  marketRegime?: "calm" | "normal" | "stressed";
+}
+
 // User-facing horizon presets exposed by the dashboard selector.
 // 3d = shortest actionable swing window; 21d = one trading month.
 // Anything outside this whitelist is refused by the API so the scanner's
@@ -108,8 +150,33 @@ export interface Calibration {
 // It must be non-zero, otherwise BUYs never compete against cash. We scale by
 // horizon: short holds need only a small hurdle above cash; long holds must
 // clear a larger implied risk-free/SPY continuation.
-export function calibrate(horizonMin: number): Calibration {
+export function calibrate(horizonMin: number, ctx?: CalibrationContext): Calibration {
   const t = horizonT(horizonMin);
+
+  // C3-2: horizon-lerp primaryBand (20 bps at 5m, 60 bps at 21d).
+  const primaryBand = USE_PRIMARY_BAND_HORIZON_LERP ? lerp(t, 20, 60) : 30;
+
+  // C3-3: horizon-scaled edgePrimary/Secondary/Retained.
+  // hdEff = horizon in trading days, referenced to 5d baseline. Scale factor
+  // √(hdEff/5) matches Grinold (2010) sub-linear IC growth in horizon.
+  const hdEff = horizonMin / (6.5 * 60);
+  const edgeScale = USE_EDGE_BAND_SCALED
+    ? Math.max(0.5, Math.min(2.0, Math.sqrt(Math.max(1, hdEff) / 5)))
+    : 1.0;
+
+  // C3-4: cashWait SPY-scaled. Multiplier = spyReturn30d / max(spyVol30d, ε).
+  // Falls back to 1.0 when either the env flag is off or the context lacks
+  // the SPY inputs.
+  const cashWaitBase = lerp(t, 2, 25);
+  const spyMultiplier =
+    USE_CASH_WAIT_SPY_SCALED
+    && ctx?.spyReturn30d != null
+    && ctx?.spyVol30d != null
+    && ctx.spyVol30d > 0
+      ? Math.max(0.25, Math.min(4.0, ctx.spyReturn30d / ctx.spyVol30d))
+      : 1.0;
+  const cashWait = cashWaitBase * spyMultiplier;
+
   return {
     frictionPrimary:   lerp(t, 0.30, 0.55),
     frictionSecondary: lerp(t, 0.30, 0.48),
@@ -130,19 +197,28 @@ export function calibrate(horizonMin: number): Calibration {
     stopAtrMult:       lerp(t, 0.8, 3.0),
     maxStopPct:        lerp(t, 0.02, 0.25),
 
-    edgePrimary:       460,
-    edgeSecondary:     348,
-    edgeRetained:      200,
+    edgePrimary:       460 * edgeScale,
+    edgeSecondary:     348 * edgeScale,
+    edgeRetained:      200 * edgeScale,
     evidenceThreshold: 95,
     evidenceScale:     8,
     memberPupMin:      0.50,
-    primaryBand:       30,
+    primaryBand,
     retainFloor:       40,
     minHurdle:         0,
     opRisk:            5,
-    cashWait:          lerp(t, 2, 25),
+    cashWait,
     minRR:             2.0,
+    // C5-1: frictionFloor at 0.05 prevents (friction · roleEdge → 0)
+    // pathologies. This is the ranking-time analog of the sizing-time
+    // fractional-Kelly cap — every proposal is bounded above 0 to keep
+    // the gate from silently rejecting any-and-all names in a bad regime.
+    // Retained by design; see P2-PLAN.md C5-1.
     frictionFloor:     0.05,
+    // C5-2: frictionCeiling at 1.0 prevents (fmult · pUpScale) from silently
+    // clipping in gate.ts:59. Ratio 1.0 means "no reason to over-scale
+    // roleEdge beyond its own bps value"; downstream pUpScale is a separate
+    // multiplier so the two shouldn't compound past 1.0.
     frictionCeiling:   1.0,
     gamma:             1.0,
   };
