@@ -19,9 +19,25 @@ import {
 import { extractFeatures, sessionBucketNow, bucketKey } from "./features";
 import type { ShadowMonitor } from "./monitor";
 import { HORIZON_RESOLUTION_MS, NET_DIVERGENCE_BPS } from "./monitor";
+import { clip } from "@/lib/engine/winsorize";
 
 const HISTORICAL_LOOKBACK_DAYS = Number(process.env.SHADOW_HISTORICAL_LOOKBACK_DAYS ?? "200");
 const MIN_HISTORY_DAYS = Number(process.env.SHADOW_MIN_HISTORY_DAYS ?? "100");
+
+// C2-5: point-in-time ADV path. Legacy uses hardcoded barDollarVol=1M for
+// every symbol every day — flat across regimes and market-cap. When enabled,
+// pulls the 20d rolling dollar-volume computed inside computeBarFeatures at
+// the CURRENT dayIdx (not present-time ADV — that would be the classic
+// backtest bug). spreadBps stays at 8 because backlog has no historical
+// quoted-spread source; upgrading that is a separate P3 vendor decision.
+const USE_HISTORICAL_ADV = process.env.BACKLOG_USE_HISTORICAL_ADV === "true";
+
+// C2-6: winsorization of the challenger-value input in the backlog inner
+// loop. Mirrors the SHADOW_WINSORIZE=1 flag from P1a #2 in dynamic-
+// challenger.ts but for cold-start replay. Single un-winsorized outlier
+// shifts ridge coef ~30% at 500-sample regime (López de Prado 2020 ch. 3).
+const BACKLOG_WINSORIZE_ENABLED = process.env.BACKLOG_WINSORIZE === "on";
+const BACKLOG_REALIZED_BPS_CAP = 1000;
 
 // Fail-loud guard: prevent silent survivorship contamination when an operator
 // sets HISTORICAL_LOOKBACK_DAYS past the safe-without-PIT threshold. See
@@ -58,9 +74,19 @@ export function getBacklogProgress(horizon: "3d" | "5d" | "10d"): BacklogProgres
   );
 }
 
+// Optional PIT universe fetcher. When provided, each replay day resolves
+// its universe from this callback (via B4-A2's universeAsOf) instead of
+// the current-time fetchActiveUniverse. Enables safe lookback expansion
+// past 750 days. Return shape only requires `symbol` — the backlog does
+// not consume exchange/source downstream. C2-7.
+export interface BacklogUniverseEntry { symbol: string }
+export type UniverseAtDateFn = (
+  isoDate: string,
+) => Promise<BacklogUniverseEntry[]>;
+
 export async function runHistoricalBacklog(
   monitor: ShadowMonitor,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; universeAtDate?: UniverseAtDateFn } = {},
 ): Promise<void> {
   const horizon = monitor.horizonKey;
   const key = horizon;
@@ -82,7 +108,20 @@ export async function runHistoricalBacklog(
   progressByHorizon.set(key, progress);
 
   try {
-    const universeEntries = await fetchActiveUniverse(600);
+    // C2-7: when a PIT universe fetcher is supplied, resolve the universe as
+    // of the START of the backlog window. This is a first-pass improvement
+    // over today's-universe-on-historical-dates (which induces survivorship
+    // bias); a fully per-day PIT rotation is a P3 follow-up that would need
+    // to also re-slice dailyMap inside the day loop.
+    let universeEntries: BacklogUniverseEntry[];
+    if (opts.universeAtDate) {
+      const windowStartIso = new Date(Date.now() - HISTORICAL_LOOKBACK_DAYS * 86_400_000)
+        .toISOString()
+        .slice(0, 10);
+      universeEntries = await opts.universeAtDate(windowStartIso);
+    } else {
+      universeEntries = await fetchActiveUniverse(600);
+    }
     if (universeEntries.length === 0) throw new Error("empty universe");
 
     const symbols = universeEntries.map((u) => u.symbol);
@@ -135,7 +174,13 @@ export async function runHistoricalBacklog(
         // challenger predicts exactly the baseline fallback, so gating
         // updates on divergence would deadlock cold start: never diverges →
         // never learns → 0 samples forever.
-        challenger.update(bucket, features, challengerValueBps);
+        // C2-6: fixed-band winsorization on the training value to prevent
+        // earnings-gap outliers from shifting ridge coefs ~30% at n=500
+        // (López de Prado 2020 ch. 3). Behind BACKLOG_WINSORIZE=on.
+        const trainValue = BACKLOG_WINSORIZE_ENABLED
+          ? clip(challengerValueBps, -BACKLOG_REALIZED_BPS_CAP, BACKLOG_REALIZED_BPS_CAP)
+          : challengerValueBps;
+        challenger.update(bucket, features, trainValue);
 
         const netDiverges = Math.abs(chalNet - row.net) > NET_DIVERGENCE_BPS;
         if (row.decision === chalDecision && !netDiverges) continue;
@@ -222,7 +267,9 @@ function buildRowsForDay(
       debtToEquity: null,
       fwdPE: null,
       spreadBps: 8,
-      barDollarVol: 1_000_000,
+      barDollarVol: USE_HISTORICAL_ADV
+        ? feats.avg_dollar_vol_20d ?? 1_000_000
+        : 1_000_000,
       relVol: 1,
       realizedVol: feats.realized_vol_ann ?? 0.3,
       beta: feats.beta_vs_spy ?? 1,
@@ -276,7 +323,9 @@ function buildRowsForDay(
       spreadBps: 8,
       volPctPerBar: 0.012,
       notional: 10_000,
-      barDollarVol: 1_000_000,
+      barDollarVol: USE_HISTORICAL_ADV
+        ? s.pack.features.avg_dollar_vol_20d ?? 1_000_000
+        : 1_000_000,
       quoteAgeSec: 0,
       gapDays: 1,
       sessionMultEntry: calib.sessionRegular,
