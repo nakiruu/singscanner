@@ -17,6 +17,7 @@
 // Citations in comments use the `data.py:NN` / `engine.py:NN` form.
 
 import { insertBars, queryBarsMulti, isClickhouseEnabled } from "./clickhouse";
+import { filterHaltsAndOutliers } from "./halt-filter";
 import { recordAlpacaFetch, recordError } from "./metrics";
 
 const DATA_BASE = "https://data.alpaca.markets/v2";
@@ -380,6 +381,12 @@ function olsSlope(ys: number[]): number | null {
 // SIGNAL_BOUNCE_CORRECTION=on AND the caller passes a spread.
 const BOUNCE_CORRECTION_ENABLED = process.env.SIGNAL_BOUNCE_CORRECTION === "on";
 
+// C8-2: halt/outlier filter. When enabled, dailyBars are pre-filtered by
+// filterHaltsAndOutliers (default thresholds) before any variance / return /
+// SMA math runs. Rejects zero-price/volume, ±5σ return outliers, and
+// volume-collapse bars — all common causes of downstream signal poisoning.
+const HALT_FILTER_ENABLED = process.env.DATA_HALT_FILTER === "on";
+
 export interface BarFeaturesOpts {
   // Typical spread in bps for the bounce correction. Omit or set 0 to skip.
   spreadBps?: number;
@@ -391,6 +398,12 @@ export function computeBarFeatures(
   intradayBars: IntradayBar[] | null,
   opts: BarFeaturesOpts = {},
 ): BarFeatures {
+  // C8-2: filter halted / outlier bars upstream of every derived metric.
+  // Applied when flag on; when off this reduces to the identity so
+  // legacy callers see no behavior change.
+  if (HALT_FILTER_ENABLED) {
+    dailyBars = filterHaltsAndOutliers(dailyBars).survived;
+  }
   const empty: BarFeatures = {
     ret_3d: null,
     ret_5d: null,
