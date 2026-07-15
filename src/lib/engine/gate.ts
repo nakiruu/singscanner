@@ -110,10 +110,40 @@ interface CostSubcomponents {
 //   age <= 8s         -> 0
 //   age <= 60s        -> (age-8)/6, capped at 20
 //   age >  60s        -> 4 + (age-60)/10, capped at 80
+//
+// The 8s / 60s knots and the 20 / 80 caps are heuristic — validate against
+// TCA panel evidence on aged fills (P0 #4 TCA output). Aquilina-Budish-
+// O'Neill (2022 QJE) show mid-cap tail decay is steeper post-8s than the
+// linear ramp assumes; C5-5 introduces a per-liquidity-bucket variant.
+// See P2-PLAN.md C5-3 (validate knots) + C5-5 (bucketed variant).
 function staleCost(ageSec: number): number {
   if (ageSec <= 8) return 0;
   if (ageSec <= 60) return Math.min(20, (ageSec - 8) / 6);
   return Math.min(80, 4 + (ageSec - 60) / 10);
+}
+
+// C5-5: liquidity-bucketed stale-quote cost. Mid-cap and small-cap names
+// have steeper post-8s decay than mega-caps because their quotes are
+// updated less frequently (Aquilina-Budish-O'Neill 2022 QJE). Base curve
+// matches staleCost(); mid-cap and small-cap variants apply a slope
+// multiplier post-knot. Pure — no side effects.
+export type LiquidityBucket = "megacap" | "largecap" | "midcap" | "smallcap";
+
+const STALE_SLOPE_MULT: Record<LiquidityBucket, number> = {
+  megacap: 1.0,
+  largecap: 1.0,
+  midcap: 1.6,
+  smallcap: 2.4,
+};
+
+export function staleCostByBucket(ageSec: number, bucket: LiquidityBucket): number {
+  const base = staleCost(ageSec);
+  const mult = STALE_SLOPE_MULT[bucket] ?? 1.0;
+  // Apply the multiplier only to the post-knot component (age > 8s) so the
+  // free-quote window is preserved uniformly across buckets. Cap at the
+  // original hard cap of 80 bps.
+  if (ageSec <= 8) return 0;
+  return Math.min(80, base * mult);
 }
 
 // Shared base cost stack. Same for both legs; each leg then multiplies by
