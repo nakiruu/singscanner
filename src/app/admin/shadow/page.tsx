@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 export default async function AdminShadowPage() {
   const session = await auth();
   if (session?.user?.role !== "ADMIN") {
-    redirect("/upgrade?reason=admin-only");
+    redirect("/dashboard");
   }
   return <ShadowClient />;
 }

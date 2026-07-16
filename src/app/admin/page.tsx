@@ -7,7 +7,7 @@ import { AdminDashboard } from "./AdminDashboard";
 export default async function AdminPage() {
   const session = await auth();
   if (session?.user?.role !== "ADMIN") {
-    redirect("/upgrade?reason=admin-only");
+    redirect("/dashboard");
   }
   return <AdminDashboard />;
 }
