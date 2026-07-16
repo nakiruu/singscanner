@@ -1,6 +1,11 @@
 import { Bell } from "lucide-react";
+import { UserMenu, type UserMenuUser } from "./UserMenu";
 
-export function Topbar() {
+export interface TopbarProps {
+  user?: UserMenuUser;
+}
+
+export function Topbar({ user }: TopbarProps) {
   return (
     <header className="flex h-14 items-center justify-between border-b border-border bg-surface-lowest px-6">
       <div className="flex items-center gap-4">
@@ -22,10 +27,17 @@ export function Topbar() {
         >
           <Bell className="h-4 w-4" />
         </button>
-        <span
-          aria-label="Profile"
-          className="inline-block h-7 w-7 rounded-full border border-outline bg-surface-high"
-        />
+        {user ? (
+          <UserMenu user={user} />
+        ) : (
+          // Fallback avatar shown only when the layout hasn't threaded a
+          // session through — should not happen inside the authed dashboard
+          // group. Kept as a safe no-op display.
+          <span
+            aria-label="Profile"
+            className="inline-block h-7 w-7 rounded-full border border-outline bg-surface-high"
+          />
+        )}
       </div>
     </header>
   );
