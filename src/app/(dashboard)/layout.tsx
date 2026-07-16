@@ -1,4 +1,5 @@
 import { auth } from "@/auth";
+import { CommandPalette } from "@/components/dashboard/CommandPalette";
 import { Sidebar } from "@/components/dashboard/sidebar";
 import { Topbar } from "@/components/dashboard/topbar";
 
@@ -26,6 +27,8 @@ export default async function DashboardLayout({
         <Topbar user={user} />
         <main className="flex-1 overflow-auto">{children}</main>
       </div>
+      {/* Global ⌘K palette. Renders nothing until opened. */}
+      <CommandPalette />
     </div>
   );
 }
