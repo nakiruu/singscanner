@@ -51,6 +51,15 @@ function fmtSignedUsd(v: number): string {
   return `${v >= 0 ? "+" : ""}${v.toFixed(2)}`;
 }
 
+// Colorblind-safe P&L glyph. Green/red alone fails ~8% of male users;
+// pairing a ▲/▼ arrow with the color makes the direction unambiguous
+// without adding chart clutter. Renders empty for zero to avoid noise.
+function pnlGlyph(v: number): string {
+  if (v > 0) return "▲";
+  if (v < 0) return "▼";
+  return "";
+}
+
 function stopClassName(row: PortfolioOverlayRow): string {
   if (row.currentPrice == null || row.stop <= 0) return "text-on-surface-variant";
   // Warn when stop sits within 3% of the live price (per spec "warn<3%").
@@ -100,10 +109,20 @@ function PortfolioRow({ row, index, onRemove, snapshotHorizon }: PortfolioRowPro
         {fmtUsd(row.currentPrice)}
       </td>
       <td className={cn("px-3 py-2 text-right font-mono tabular-nums", pnlTone(row.pnlDollars))}>
-        {row.currentPrice == null ? "—" : fmtSignedUsd(row.pnlDollars)}
+        {row.currentPrice == null ? "—" : (
+          <>
+            <span aria-hidden="true" className="mr-1">{pnlGlyph(row.pnlDollars)}</span>
+            {fmtSignedUsd(row.pnlDollars)}
+          </>
+        )}
       </td>
       <td className={cn("px-3 py-2 text-right font-mono tabular-nums", pnlTone(row.pnlPercent))}>
-        {row.currentPrice == null ? "—" : fmtPct(row.pnlPercent)}
+        {row.currentPrice == null ? "—" : (
+          <>
+            <span aria-hidden="true" className="mr-1">{pnlGlyph(row.pnlPercent)}</span>
+            {fmtPct(row.pnlPercent)}
+          </>
+        )}
       </td>
       <td className={cn("px-3 py-2 text-right font-mono tabular-nums", stopClassName(row))}>
         {row.stop > 0 ? row.stop.toFixed(2) : "—"}

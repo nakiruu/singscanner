@@ -141,6 +141,22 @@ export function ActionableDashboard() {
         onDecisionClick={openDialogForBuy}
       />
 
+      {/* aria-live region for screen-reader announcements on scan refresh.
+          Polite so it doesn't interrupt in-progress narration. Only fires
+          when the top-of-book actionable set changes. */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+      >
+        {buyPicks.length > 0 && (
+          <span>
+            {buyPicks.length} actionable BUY {buyPicks.length === 1 ? "pick" : "picks"} · horizon {horizon}
+          </span>
+        )}
+      </div>
+
       {dialog.open && (
         <AddPositionDialog
           open

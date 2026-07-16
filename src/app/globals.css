@@ -99,6 +99,50 @@ pre {
   50%      { opacity: 0.5; }
 }
 
+/* -- Accessibility: reduced motion (Week 12) --------------------------------
+ * Users who prefer reduced motion get static equivalents. Spin loaders drop
+ * to a still glyph, LED pulses stop pulsing (they stay at full opacity —
+ * signal remains, motion doesn't), and all transitions drop to zero
+ * duration. Applies globally so we don't have to remember to guard every
+ * new component individually.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .led-pulse { opacity: 1 !important; }
+}
+
+/* -- Accessibility: focus ring (Week 12) ------------------------------------
+ * Consistent focus-visible ring for every interactive control. Individual
+ * components can override, but the default must never be missing.
+ */
+:where(button, a, input, textarea, select, [role="button"], [role="menuitem"],
+       [role="option"], [role="switch"]):focus-visible {
+  outline: 2px solid var(--primary, #0cce6b);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* -- Accessibility: sr-only utility (Week 12) --------------------------------
+ * Screen-reader-only content. Used for aria-live regions and hidden labels.
+ * The canonical implementation from the Tailwind CSS project.
+ */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
 /* Subtle grid backdrop for empty states / hero panels. */
 .blueprint-grid {
   background-image:
