@@ -14,6 +14,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, ChevronDown, Circle, Loader2, Sparkles } from "lucide-react";
+import { ConfidenceDots } from "@/components/dashboard/ConfidenceDots";
 import { DecisionBadge } from "@/components/dashboard/DecisionBadge";
 import { MQLRBars } from "@/components/dashboard/MQLRBars";
 import { AddPositionDialog } from "@/components/portfolio/AddPositionDialog";
@@ -452,10 +453,11 @@ function BuyPicksSection({
           />
         ) : (
           <ul className="divide-y divide-border">
-            {rows.map((r) => (
+            {rows.map((r, i) => (
               <BuyPickRow
                 key={r.symbol}
                 row={r}
+                isHero={i < 3}
                 isExpanded={expandedSymbol === r.symbol}
                 onToggle={() => onToggle(r.symbol)}
                 onDecisionClick={() => onDecisionClick(r)}
@@ -470,11 +472,13 @@ function BuyPicksSection({
 
 function BuyPickRow({
   row,
+  isHero = false,
   isExpanded,
   onToggle,
   onDecisionClick,
 }: {
   row: ScanRow;
+  isHero?: boolean;
   isExpanded: boolean;
   onToggle: () => void;
   onDecisionClick: () => void;
@@ -492,11 +496,16 @@ function BuyPickRow({
         aria-expanded={isExpanded}
         aria-controls={`row-detail-${row.symbol}`}
         className={cn(
-          "grid w-full grid-cols-12 items-center gap-3 px-5 py-3 text-left text-sm transition-colors",
+          "grid w-full grid-cols-12 items-center gap-3 px-5 text-left text-sm transition-colors",
           "hover:bg-surface-default focus:outline-none focus-visible:bg-surface-default",
+          // Hero rows: taller + subtle emerald left-border to draw the eye
+          // toward the top of book without shouting.
+          isHero
+            ? "border-l-2 border-primary/60 bg-primary/[0.03] py-4"
+            : "py-3",
         )}
       >
-        {/* Symbol + star */}
+        {/* Symbol + star + confidence dots */}
         <div className="col-span-3 flex items-center gap-2">
           <ChevronDown
             className={cn(
@@ -505,16 +514,28 @@ function BuyPickRow({
             )}
           />
           {row.star ? (
-            <Sparkles className="h-3.5 w-3.5 text-primary" />
+            <Sparkles className={cn("shrink-0 text-primary", isHero ? "h-4 w-4" : "h-3.5 w-3.5")} />
           ) : (
-            <Circle className="h-3.5 w-3.5 text-on-surface-variant" />
+            <Circle className={cn("shrink-0 text-on-surface-variant", isHero ? "h-4 w-4" : "h-3.5 w-3.5")} />
           )}
-          <span className="font-mono text-[13px] font-semibold text-on-surface">
+          <span
+            className={cn(
+              "font-mono font-semibold text-on-surface",
+              isHero ? "text-[15px]" : "text-[13px]",
+            )}
+          >
             {row.symbol}
           </span>
           <span className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
             {row.role}
           </span>
+          {isHero && (
+            <ConfidenceDots
+              confidence={row.confidence}
+              className="ml-1"
+              ariaLabel={`Conviction level`}
+            />
+          )}
         </div>
 
         {/* Price + TP + SL */}
