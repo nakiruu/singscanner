@@ -3,17 +3,21 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Activity as ActivityIcon,
+  BookOpen,
   Briefcase,
   Cog,
-  FileText,
   Radar,
+  Star,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const nav = [
   { href: "/dashboard", label: "Scanner",   icon: Radar },
+  { href: "/watchlist", label: "Watchlist", icon: Star },
   { href: "/portfolio", label: "Portfolio", icon: Briefcase },
-  { href: "/pipeline",  label: "Pipeline",  icon: FileText },
+  { href: "/activity",  label: "Activity",  icon: ActivityIcon },
+  { href: "/learn",     label: "Learn",     icon: BookOpen },
   { href: "/settings",  label: "Settings",  icon: Cog },
 ];
 
