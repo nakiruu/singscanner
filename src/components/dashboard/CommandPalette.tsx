@@ -122,10 +122,7 @@ export function CommandPalette() {
           hint: `${r.decision} · net ${r.net.toFixed(1)}bps`,
           keywords: `${r.symbol} symbol ${r.decision}`,
           icon: Search,
-          // /symbol/[symbol] route lands in Week 3 or later — for now,
-          // opening a symbol just returns to /dashboard so we don't leak
-          // a 404.
-          action: () => router.push("/dashboard"),
+          action: () => router.push(`/symbol/${encodeURIComponent(r.symbol)}`),
         }))
       : [];
     return [
