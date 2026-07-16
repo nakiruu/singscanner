@@ -160,6 +160,43 @@ function PortfolioRow({ row, index, onRemove, snapshotHorizon }: PortfolioRowPro
   );
 }
 
+// Portfolio-level summary metrics computed from the overlay rows. Cheap;
+// runs on every render but bounded by holdings count (~dozens).
+function summarize(rows: readonly PortfolioOverlayRow[]) {
+  let invested = 0;
+  let value = 0;
+  const perName: number[] = [];
+  let pricedNames = 0;
+
+  for (const r of rows) {
+    const cb = r.qty * r.costBasis;
+    invested += cb;
+    if (r.currentPrice != null) {
+      const v = r.qty * r.currentPrice;
+      value += v;
+      perName.push(v);
+      pricedNames++;
+    } else {
+      perName.push(cb);
+    }
+  }
+
+  const pnl = value - invested;
+  const pnlPct = invested > 0 ? pnl / invested : 0;
+  // Herfindahl on current-value weights.
+  const totalW = perName.reduce((s, x) => s + x, 0);
+  const weights = totalW > 0 ? perName.map((x) => x / totalW) : perName.map(() => 0);
+  const hhi = weights.reduce((s, w) => s + w * w, 0);
+  const top3 = weights.slice().sort((a, b) => b - a).slice(0, 3).reduce((s, w) => s + w, 0);
+  return { invested, value, pnl, pnlPct, hhi, top3, pricedNames };
+}
+
+function pctColor(v: number, showZeroNeutral = false): string {
+  if (v > 0) return "text-success";
+  if (v < 0) return "text-error";
+  return showZeroNeutral ? "text-on-surface-variant" : "text-on-surface";
+}
+
 export default function PortfolioPage() {
   const { snapshot, status } = useScanStream();
   const {
@@ -171,6 +208,7 @@ export default function PortfolioPage() {
   } = usePortfolio();
   const overlay = usePortfolioOverlay(snapshot, positions);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const summary = summarize(overlay);
 
   return (
     <div className="space-y-6 p-6">
@@ -189,6 +227,114 @@ export default function PortfolioPage() {
         <Button size="sm" onClick={() => setDialogOpen(true)}>
           Add position
         </Button>
+      </div>
+
+      {/* Hero strip — total value + P&L. Today's delta needs day-open
+          prices which aren't threaded through the scan stream yet; shown
+          as placeholder until that lands. */}
+      <Card>
+        <CardContent className="grid grid-cols-2 gap-6 pt-6 md:grid-cols-4">
+          <HeroStat
+            label="Total value"
+            value={overlay.length === 0 ? "—" : `$${summary.value.toFixed(2)}`}
+            sub={
+              overlay.length === 0
+                ? ""
+                : `${summary.pricedNames} of ${overlay.length} priced live`
+            }
+          />
+          <HeroStat
+            label="Today"
+            value="—"
+            sub="needs day-open prices"
+          />
+          <HeroStat
+            label="Cumulative"
+            value={
+              summary.invested === 0
+                ? "—"
+                : `${summary.pnl >= 0 ? "+" : ""}$${summary.pnl.toFixed(2)}`
+            }
+            sub={
+              summary.invested === 0
+                ? ""
+                : `${summary.pnl >= 0 ? "+" : ""}${(summary.pnlPct * 100).toFixed(2)}%`
+            }
+            valueTone={pctColor(summary.pnl, true)}
+            subTone={pctColor(summary.pnlPct, true)}
+          />
+          <HeroStat
+            label="Cash"
+            value="—"
+            sub="brokerage-adapter follow-up"
+          />
+        </CardContent>
+      </Card>
+
+      {/* Three summary cards */}
+      <div className="grid gap-4 md:grid-cols-3">
+        <Card>
+          <CardHeader>
+            <CardTitle>Concentration</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 font-mono text-[12px]">
+            <SummaryRow
+              label="Top-3 weight"
+              value={overlay.length === 0 ? "—" : `${(summary.top3 * 100).toFixed(1)}%`}
+              tone={
+                summary.top3 > 0.6 ? "text-error"
+                : summary.top3 > 0.4 ? "text-tertiary"
+                : "text-on-surface"
+              }
+            />
+            <SummaryRow
+              label="Herfindahl"
+              value={overlay.length === 0 ? "—" : summary.hhi.toFixed(3)}
+              tone={
+                summary.hhi > 0.25 ? "text-error"
+                : summary.hhi > 0.15 ? "text-tertiary"
+                : "text-on-surface"
+              }
+            />
+            <p className="mt-2 text-[10px] text-on-surface-variant">
+              Herfindahl &gt; 0.25 = highly concentrated. Consider rotation.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Sector split</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div
+              aria-hidden="true"
+              className="flex h-20 items-center justify-center rounded border border-dashed border-border/60 bg-surface-low font-mono text-[10px] text-on-surface-variant"
+            >
+              Treemap placeholder · needs sector data plumbing
+            </div>
+            <p className="mt-2 font-mono text-[10px] text-on-surface-variant">
+              Sector data lands with the FMP-fundamentals sector-tag PR.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>30-day P&amp;L</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div
+              aria-hidden="true"
+              className="flex h-20 items-center justify-center rounded border border-dashed border-border/60 bg-surface-low font-mono text-[10px] text-on-surface-variant"
+            >
+              Sparkline placeholder · needs portfolio-value history
+            </div>
+            <p className="mt-2 font-mono text-[10px] text-on-surface-variant">
+              History table + sparkline land with the value-snapshot PR.
+            </p>
+          </CardContent>
+        </Card>
       </div>
 
       <Card>
@@ -264,6 +410,53 @@ export default function PortfolioPage() {
           onSubmit={addPosition}
         />
       )}
+    </div>
+  );
+}
+
+// -- Hero / summary primitives ----------------------------------------------
+
+function HeroStat({
+  label,
+  value,
+  sub,
+  valueTone,
+  subTone,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  valueTone?: string;
+  subTone?: string;
+}) {
+  return (
+    <div>
+      <div className="label-caps font-mono">{label}</div>
+      <div className={cn("mt-1 font-mono text-2xl font-semibold tabular-nums", valueTone ?? "text-on-surface")}>
+        {value}
+      </div>
+      {sub && (
+        <div className={cn("mt-0.5 font-mono text-[11px]", subTone ?? "text-on-surface-variant")}>
+          {sub}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SummaryRow({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: string;
+}) {
+  return (
+    <div className="flex items-baseline justify-between border-b border-border/60 py-1 last:border-b-0">
+      <span className="text-on-surface-variant">{label}</span>
+      <span className={cn("tabular-nums", tone ?? "text-on-surface")}>{value}</span>
     </div>
   );
 }
