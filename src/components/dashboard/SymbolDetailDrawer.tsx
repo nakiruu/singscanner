@@ -293,7 +293,7 @@ export function SymbolDetailDrawer({
             <div className="flex items-center gap-2">
               <span className="font-mono text-xl font-bold text-on-surface">{row.symbol}</span>
               <ExchangeChip exchange={exchange} />
-              <DecisionBadge decision={row.decision} />
+              <DecisionBadge decision={row.decision} row={row} horizon={horizonSpec} />
               <Badge tone={rolePillTone(row.role)} className="uppercase">
                 {row.role}
               </Badge>

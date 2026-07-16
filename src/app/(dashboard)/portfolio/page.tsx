@@ -63,9 +63,10 @@ interface PortfolioRowProps {
   row: PortfolioOverlayRow;
   index: number;
   onRemove: (symbol: string) => Promise<void>;
+  snapshotHorizon?: string;
 }
 
-function PortfolioRow({ row, index, onRemove }: PortfolioRowProps) {
+function PortfolioRow({ row, index, onRemove, snapshotHorizon }: PortfolioRowProps) {
   const [removing, setRemoving] = useState(false);
 
   const handleRemove = async () => {
@@ -134,7 +135,11 @@ function PortfolioRow({ row, index, onRemove }: PortfolioRowProps) {
       </td>
       <td className="px-3 py-2">
         <div className="flex items-center gap-2">
-          <DecisionBadge decision={row.decision} />
+          <DecisionBadge
+            decision={row.decision}
+            row={row.scanRow ?? undefined}
+            horizon={row.scanRow ? snapshotHorizon : undefined}
+          />
           <span className="font-mono text-[10px] uppercase tracking-wider text-on-surface-variant">
             {row.reason}
           </span>
@@ -243,6 +248,7 @@ export default function PortfolioPage() {
                     row={row}
                     index={i}
                     onRemove={removePosition}
+                    snapshotHorizon={snapshot?.horizon}
                   />
                 ))}
               </tbody>
