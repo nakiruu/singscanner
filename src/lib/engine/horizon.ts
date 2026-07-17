@@ -2,6 +2,7 @@
 // Source: docs/instructions2.md "Horizon calibration"
 
 import { clamp, lerp } from "./stats";
+import type { RegimeContext } from "./regime";
 
 const MIN_HORIZON = 5;    // 5 minutes
 const MAX_HORIZON = 8190; // 21 trading days * 6.5h * 60min
@@ -42,6 +43,18 @@ const USE_EDGE_BAND_SCALED = EDGE_BAND_MODE === "scaled";
 const USE_CASH_WAIT_SPY_SCALED =
   process.env.SIGNAL_CASH_WAIT_SPY_SCALED === "on";
 
+// D1-3: frictionPrimary regime-conditional runtime override. Manual
+// operator lever until the D3-1 regime classifier is trained. Under
+// GATE_FRICTION_PRIMARY_STRESSED=on the ceiling drops from 0.55 to 0.35
+// — treats every candidate more skeptically during operator-declared
+// momentum-crash regimes (Daniel & Moskowitz 2016).
+//
+// Legacy default preserves current behavior. Wires into regime.ts
+// classifier when D3 activates; until then, operators eyeball VIX and
+// toggle at will.
+const FRICTION_PRIMARY_STRESSED =
+  process.env.GATE_FRICTION_PRIMARY_STRESSED === "on";
+
 // C3-6: optional context supplied at calibrate-time to enable regime-
 // conditional behavior. All fields optional; missing fields fall back to
 // the static lerp defaults. Not yet consumed by anything on the default
@@ -56,9 +69,11 @@ export interface CalibrationContext {
   // Cohort cardinality (rows passing evidence/pUp gate) — informs C3-1
   // adaptive primaryBand callers.
   cohortCardinality?: number;
-  // Optional forward-declared market vol classification for future
-  // regime-detection wiring.
-  marketRegime?: "calm" | "normal" | "stressed";
+  // D1-2: full regime classification record from regime.ts. Replaces the
+  // C3-6 marketRegime string enum (had no consumers). D3 items
+  // (horizon-regime.ts, composite-fit.ts) type against RegimeContext;
+  // stub classifier returns neutralRegime() until trained.
+  regime?: RegimeContext;
 }
 
 // User-facing horizon presets exposed by the dashboard selector.
@@ -178,7 +193,8 @@ export function calibrate(horizonMin: number, ctx?: CalibrationContext): Calibra
   const cashWait = cashWaitBase * spyMultiplier;
 
   return {
-    frictionPrimary:   lerp(t, 0.30, 0.55),
+    // D1-3: stressed override tightens the ceiling from 0.55 → 0.35.
+    frictionPrimary:   FRICTION_PRIMARY_STRESSED ? lerp(t, 0.30, 0.35) : lerp(t, 0.30, 0.55),
     frictionSecondary: lerp(t, 0.30, 0.48),
     frictionRetained:  lerp(t, 0.30, 0.42),
     exitReserve:       lerp(t, 1.00, 1.15),
