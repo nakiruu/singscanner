@@ -60,6 +60,12 @@ export interface RawSymbolInputs {
   roe: number | null;
   debtToEquity: number | null;  // lower = better; we invert via 100-pctile
   fwdPE: number | null;         // lower = better; we invert via 100-pctile
+  // Optional GICS sector code (e.g., "Energy", "Financials"). Set when the
+  // upstream data feed (FMP sidecar) supplies it. Reserves the interface
+  // slot for future D3-4 industry-neutralization (Cohen & Polk WP) —
+  // subtract industry medians from Quality inputs before percentile
+  // ranking. No consumer today.
+  sector?: string | null;
 
   // Liquidity
   spreadBps: number;
